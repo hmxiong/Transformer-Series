@@ -46,7 +46,7 @@ def get_args_parser():
                         help="Number of encoding layers in the transformer")
     parser.add_argument('--dec_layers', default=6, type=int,
                         help="Number of decoding layers in the transformer")
-    parser.add_argument('--dim_feedforward', default=1024, type=int,
+    parser.add_argument('--dim_feedforward', default=2048, type=int, # when using deformable is 1024
                         help="Intermediate size of the feedforward layers in the transformer blocks")
     parser.add_argument('--hidden_dim', default=256, type=int,
                         help="Size of the embeddings (dimension of the transformer)")
@@ -54,7 +54,7 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=300, type=int,
+    parser.add_argument('--num_queries', default=300, type=int,   # when using deformable and conitional is 300
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 

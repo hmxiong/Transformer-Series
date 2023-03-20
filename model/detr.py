@@ -1,4 +1,5 @@
 import torch
+import math
 import torch.nn.functional as F
 from torch import nn
 
@@ -9,6 +10,7 @@ from tools.misc import (NestedTensor, nested_tensor_from_tensor_list,accuracy,
 from .backbone import build_backbone
 from .matcher import build_matcher
 from .transformer import build_transformer
+from tools.misc import inverse_sigmoid
 
 class MLP(nn.Module):
     """ a simple mlp perception (FeedForwardNetwork)"""
@@ -64,6 +66,83 @@ class DETR(nn.Module):
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
 
+class ConditionalDETR(nn.Module):
+    """ This is the Conditional DETR module that performs object detection """
+    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
+        """ Initializes the model.
+        Parameters:
+            backbone: torch module of the backbone to be used. See backbone.py
+            transformer: torch module of the transformer architecture. See transformer.py
+            num_classes: number of object classes
+            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
+                         Conditional DETR can detect in a single image. For COCO, we recommend 100 queries.
+            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+        """
+        super().__init__()
+        self.num_queries = num_queries
+        self.transformer = transformer
+        hidden_dim = transformer.ffn_hidden_dim
+        self.class_embed = nn.Linear(hidden_dim, num_classes)
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        self.backbone = backbone
+        self.aux_loss = aux_loss
+
+        # init prior_prob setting for focal loss
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+
+        # init bbox_mebed
+        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+
+    def forward(self, samples: NestedTensor):
+        """ The forward expects a NestedTensor, which consists of:
+               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+
+            It returns a dict with the following elements:
+               - "pred_logits": the classification logits (including no-object) for all queries.
+                                Shape= [batch_size x num_queries x num_classes]
+               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
+                               (center_x, center_y, width, height). These values are normalized in [0, 1],
+                               relative to the size of each individual image (disregarding possible padding).
+                               See PostProcess for information on how to retrieve the unnormalized bounding box.
+               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
+                                dictionnaries containing the two above keys for each decoder layer.
+        """
+        if isinstance(samples, (list, torch.Tensor)):
+            samples = nested_tensor_from_tensor_list(samples)
+        features, pos = self.backbone(samples)
+
+        src, mask = features[-1].decompose()
+        assert mask is not None
+        hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
+        
+        reference_before_sigmoid = inverse_sigmoid(reference)
+        outputs_coords = []
+        for lvl in range(hs.shape[0]):
+            tmp = self.bbox_embed(hs[lvl])
+            tmp[..., :2] += reference_before_sigmoid
+            outputs_coord = tmp.sigmoid()
+            outputs_coords.append(outputs_coord)
+        outputs_coord = torch.stack(outputs_coords)
+
+        outputs_class = self.class_embed(hs)
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        if self.aux_loss:
+            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        return out
+
+    @torch.jit.unused
+    def _set_aux_loss(self, outputs_class, outputs_coord):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [{'pred_logits': a, 'pred_boxes': b}
+                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
@@ -71,7 +150,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
+    def __init__(self, num_classes, matcher, weight_dict, eos_coef, focal_alpha, losses, model_type):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -81,14 +160,24 @@ class SetCriterion(nn.Module):
             losses: list of all the losses to be applied. See get_loss for list of available losses.
         """
         super().__init__()
-        self.num_classes = num_classes
-        self.matcher = matcher
-        self.weight_dict = weight_dict
-        self.eos_coef = eos_coef
-        self.losses = losses
-        empty_weight = torch.ones(self.num_classes + 1)
-        empty_weight[-1] = self.eos_coef
-        self.register_buffer('empty_weight', empty_weight)
+        if model_type == 'deformable' or model_type == 'conditional':
+            self.num_classes = num_classes
+            self.matcher = matcher
+            self.weight_dict = weight_dict
+            self.losses = losses
+            self.focal_alpha = focal_alpha
+            self.num_classes = num_classes
+            self.model_type = model_type
+        else:
+            self.matcher = matcher
+            self.weight_dict = weight_dict
+            self.eos_coef = eos_coef
+            self.losses = losses
+            self.focal_alpha = focal_alpha
+            self.model_type = model_type
+            empty_weight = torch.ones(self.num_classes + 1)
+            empty_weight[-1] = self.eos_coef
+            self.register_buffer('empty_weight', empty_weight)
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -102,10 +191,18 @@ class SetCriterion(nn.Module):
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
+        
+        if self.model_type == 'base':
+            loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        elif self.model_type == 'deformable' or self.model_type =='conditional' :
+            target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
+                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
+            target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+            target_classes_onehot = target_classes_onehot[:,:,:-1]
+            loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+
         losses = {'loss_ce': loss_ce}
-
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
             losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
@@ -243,6 +340,12 @@ class SetCriterion(nn.Module):
 class PostProcess(nn.Module):
     # 模型的后处理部分，完成后续最后的检测框的输出
     """ This module converts the model's output into the format expected by the coco api"""
+    def __init__(self, model_type):
+        super().__init__()
+        self.model_type = model_type
+        # self.outputs = outputs
+        # self.target_sizes = target_sizes
+        
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         """ Perform the computation
@@ -256,12 +359,21 @@ class PostProcess(nn.Module):
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
+        
+        if self.model_type == 'base':
+            prob = F.softmax(out_logits, -1)
+            scores, labels = prob[..., :-1].max(-1)
 
-        prob = F.softmax(out_logits, -1)
-        scores, labels = prob[..., :-1].max(-1)
-
-        # convert to [x0, y0, x1, y1] format
-        boxes = box_cxcywh_to_xyxy(out_bbox)
+            # convert to [x0, y0, x1, y1] format
+            boxes = box_cxcywh_to_xyxy(out_bbox)
+        elif self.model_type == 'deformable' or self.model_type == 'conditional':
+            prob = out_logits.sigmoid()
+            topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
+            scores = topk_values
+            topk_boxes = topk_indexes // out_logits.shape[2]
+            labels = topk_indexes % out_logits.shape[2]
+            boxes = box_cxcywh_to_xyxy(out_bbox)
+            boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
@@ -286,18 +398,28 @@ def build(args):
         # max_obj_id + 1, but the exact value doesn't really matter
         num_classes = 250
     device = torch.device(args.device)
+    model_type = args.model_type
     # 去除掉了源代码中关于分割掩码的训练过程
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
-
-    model = DETR(
-        backbone,
-        transformer,
-        num_classes=num_classes,
-        num_queries=args.num_queries,
-        aux_loss=args.aux_loss,
-    )
+    
+    if model_type == 'base':
+        model = DETR(
+                    backbone,
+                    transformer,
+                    num_classes=num_classes,
+                    num_queries=args.num_queries,
+                    aux_loss=args.aux_loss,
+                )
+    elif model_type == 'conditional':
+        model = ConditionalDETR(
+                    backbone,
+                    transformer,
+                    num_classes=num_classes,
+                    num_queries=args.num_queries,
+                    aux_loss=args.aux_loss,
+                )
     
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': 1, 'loss_bbox': args.bbox_loss_coef}
@@ -311,10 +433,11 @@ def build(args):
 
     losses = ['labels', 'boxes', 'cardinality']
 
-    criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
-                             eos_coef=args.eos_coef, losses=losses)
+    criterion = SetCriterion(num_classes,  matcher=matcher, weight_dict=weight_dict,
+                             eos_coef=args.eos_coef, focal_alpha=args.focal_alpha, 
+                             losses=losses, model_type=model_type)
     criterion.to(device)
-    postprocessors = {'bbox': PostProcess()}
+    postprocessors = {'bbox': PostProcess(model_type)}
 
     return model, criterion, postprocessors
 

@@ -33,17 +33,19 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
     # MSA在pytorch中的基础算子
     # for debug and test only,
     # training need to use cuda version instead
-    # 输入的value这个时候还只是单尺度的信息，后续才会引入多尺度信息
+    # 输入的value这个时候是融合后的多尺度信息
     N_, S_, M_, D_ = value.shape
     # 对应的是batch_size, number token, number head, head dims
     # number token 即对应上了相应的channel数量
     _, Lq_, M_, L_, P_, _ = sampling_locations.shape
     # Lq_: number query,  L_: level number对应的属于哪一层的特征,  P_: sampling number采样点数
-    # num_query在与采样点的情况向对应起来？
+    # 把value分割到各个特征层上得到对应的 list value
     value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
+    # 采样点坐标从[0,1] -> [-1, 1]  F.grid_sample要求采样坐标归一化到[-1, 1]
     sampling_grids = 2 * sampling_locations - 1
     sampling_value_list = []
     for lid_, (H_, W_) in enumerate(value_spatial_shapes):
+        # 根据采样点的位置得到各个特征图上相应的value，并于atten weight进行加权求和
         # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
         value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_*M_, D_, H_, W_)
         # N_, Lq_, M_, P_, 2 -> N_, M_, Lq_, P_, 2 -> N_*M_, Lq_, P_, 2

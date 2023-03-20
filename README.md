@@ -9,8 +9,8 @@ This project is mainly used to complete the paper reproduction and precision ali
 - numpy = 1.23.5 pycocotools = 2.0  scipy = 1.7.1
 
 ## What's New
-- Support **DETR** whole process of training and evaluation on COCO.
-- Support **Deformable-DETR** only evaluation on COCO.
+- Support **Deformable-DETR** whole process of training and evaluation on COCO.
+- Support **Conditional-DETR** whole process of training and evaluation on COCO.
 
 
 ## Model List
@@ -19,35 +19,43 @@ This project is mainly used to complete the paper reproduction and precision ali
 
 - ✅ [DETR](./result_record/DETR_Precision_alignment_record.md)
 - ✅ [Deformable-DETR](./result_record/Deformable-DETR_Precision_alignment.md)
--  [Conditional-DETR] (comming soon)
--  [DAB-DETR] 
+- ✅ [Conditional-DETR](./result_record/Conditional_DETR_Precision_alignment.md)
+-  [DAB-DETR] (comming soon)
 -  [DAB-Deformable-DETR]
 
 </details>
 
-# Usage - Object detection
+
+## Usage - Object detection
 First, clone the repository locally:
-```
+```bash
 git clone 
 ```
 Then, install PyTorch 1.5+ and torchvision 0.6+:
-```
+```bash
 conda install -c pytorch pytorch torchvision
 ```
 Install pycocotools (for evaluation on COCO) and scipy (for training):
-```
+```bash
 conda install cython scipy
 pip install -U 'git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI'
 ```
 Install other requirements:
-```
+```bash
 pip install -r requirements.txt
 ```
 That's it, should be good to train and evaluate detection models.
 
 (optional) to work with panoptic install panopticapi:
-```
+```bash
 pip install git+https://github.com/cocodataset/panopticapi.git
+```
+Compiling CUDA operators
+```bash
+cd ./model/basic_operator
+python setup.py build install
+# unit test (should see all checking is True)
+python test.py
 ```
 
 ## Data preparation
@@ -67,7 +75,6 @@ To train baseline DETR on a single node with 8 gpus for 300 epochs run:
 ```
 python -m torch.distributed.launch --nproc_per_node=8 --use_env main.py --coco_path /path/to/coco 
 ```
-At present, only the basic version of DETR training is supported.
 
 ## Evaluation
 To evaluate DETR R50 on COCO val5k with a single GPU run:

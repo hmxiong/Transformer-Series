@@ -50,18 +50,22 @@ class BackboneBase(nn.Module):  # using model_type to change the structure
             # layer0 layer1不需要训练 因为前面层提取的信息其实很有限 都是差不多的 不需要训练
             if not train_backbone or 'layer2'not in name and 'layer3' not in name and 'layer4' not in name:
                 parameter.requires_grad_(False)
-            
-        if model_type == 'base':
+        # print(model_type)
+        # print(return_interm_layers)
+        if model_type == 'base' or model_type =='conditional':
+            # print('base')
             if return_interm_layers :
                 return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
+                self.strides = [8, 16, 32]
             else:
                 return_layers = {'layer4': "0"}
+                self.strides = [32]
                 # 检测任务直接返回layer4即可  
                 # 执行torchvision.models._utils.IntermediateLayerGetter
                 # 这个函数可以直接返回对应层的输出结果
             self.num_channels = num_channels
         elif model_type == 'deformable': # deformable detr系列的模型配置
-            print('deformable')
+            # print('deformable')
             if return_interm_layers:
                 # print('deformable')
                 # return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
@@ -141,5 +145,5 @@ def build_backbone(args):
                         args.model_type)
     model = Joiner(backbone, position_embedding)
     # model.num_channels = backbone.num_channels
-    print(len(backbone.strides))
+    # print(len(backbone.strides))
     return model
