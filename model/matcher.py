@@ -7,12 +7,15 @@ from tools.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 class HungarianMatcher(nn.Module):
 
     def __init__(self, cost_class:float = 1, cost_bbox:float = 1,
-                 cost_giou: float = 1):
+                 cost_giou: float = 1, focal_alpha = 0.25, model_type=None):
         super().__init__() # 用于对序列数据进行相应的匹配
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
+        
+        self.focal_alpha = focal_alpha
+        self.model_type = model_type
 
     @torch.no_grad() # 后续的数据不参加梯度的计算
     def forward(self, outputs, targets):
@@ -20,7 +23,8 @@ class HungarianMatcher(nn.Module):
         
         # We flatten to compute the cost matrices in a batch
         # [2,100,92] -> [200, 92] -> [200, 92]概率
-        out_prob = outputs["pred_logits"].flatten(0,1).softmax(-1)
+        # out_prob = outputs["pred_logits"].flatten(0,1).softmax(-1)
+        out_prob = outputs["pred_logits"].flatten(0,1).sigmoid()
         # [2,100,4] -> [200, 4]   [batch_size * num_queries, 4]
         out_bbox = outputs["pred_boxes"].flatten(0,1)
         
@@ -31,7 +35,15 @@ class HungarianMatcher(nn.Module):
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
         # The 1 is a constant that doesn't change the matching, it can be ommitted.
-        cost_class = -out_prob[:, tgt_ids]
+        if self.model_type in ['base']:
+            cost_class = -out_prob[:, tgt_ids]
+        else:
+            alpha = self.focal_alpha
+            gamma = 2.0
+            neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+            pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+            cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
+        
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
         # 计算相应的giou损失函数带来的影响，但是我的问题是为什么需要问号
@@ -50,7 +62,8 @@ class HungarianMatcher(nn.Module):
         return [(torch.as_tensor(i,dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
     
 def build_matcher(args):
-    return HungarianMatcher(cost_class=args.set_cost_class, cost_bbox=args.set_cost_bbox, cost_giou=args.set_cost_giou)
+    return HungarianMatcher(cost_class=args.set_cost_class, cost_bbox=args.set_cost_bbox, cost_giou=args.set_cost_giou,
+                            focal_alpha=args.focal_alpha, model_type=args.model_type)
 
 
 

@@ -44,7 +44,7 @@ def generalized_box_iou(boxes1, boxes2):
     wh = (rb - lt).clamp(min=0)  # [N,M,2]
     area = wh[:, :, 0] * wh[:, :, 1]
 
-    return iou - (area - union) / area
+    return iou - (area - union) / (area + 1e-6)
 
 def masks_to_boxes(masks):
     if masks.numel()==0:

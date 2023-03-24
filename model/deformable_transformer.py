@@ -9,7 +9,7 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from tools.misc import inverse_sigmoid
 from .basic_operator import MSDeformAttn
-from .transformer import get_clone
+from .transformer import get_clone,gen_sineembed_for_position,MLP
 
 class DeformableTransformer(nn.Module):
     def __init__(self, ffn_hidden_dim=256 , n_head=8,
@@ -17,13 +17,15 @@ class DeformableTransformer(nn.Module):
                  dim_feedforward = 1024, dropout = 0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
-                 two_stage=False, two_stage_num_proposals=300):
+                 two_stage=False, two_stage_num_proposals=300,
+                 use_dab=False, high_dim_query_update=False, no_sine_embed=False):
         super().__init__()
 
         self.ffn_hidden_dim = ffn_hidden_dim
         self.n_head = n_head
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
+        self.use_dab = use_dab
 
         encoder_layer = DeformableTransformerEncoderLayer(ffn_hidden_dim, dim_feedforward,
                                                           dropout, activation, 
@@ -35,7 +37,8 @@ class DeformableTransformer(nn.Module):
                                                           dropout, activation, 
                                                           num_feature_levels, n_head, dec_n_points)
         
-        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers,return_intermediate_dec)
+        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers,return_intermediate_dec,
+                                                    use_dab=use_dab, ffn_hidden_dim=ffn_hidden_dim, high_dim_query_update=high_dim_query_update, no_sine_embed=no_sine_embed)
         
         # 可学习的位置编码[4, 256]，防止出现不同层一样的位置编码，使用可学习参数代替原本的固定参数编码
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, ffn_hidden_dim))
@@ -47,7 +50,12 @@ class DeformableTransformer(nn.Module):
             self.pos_trans = nn.Linear(ffn_hidden_dim * 2, ffn_hidden_dim * 2)
             self.pos_trans_norm = nn.LayerNorm(ffn_hidden_dim * 2)
         else:
-            self.reference_points = nn.Linear(ffn_hidden_dim, 2)
+            if not self.use_dab:
+                self.reference_points = nn.Linear(ffn_hidden_dim, 2)
+        
+        self.high_dim_query_update = high_dim_query_update
+        if high_dim_query_update:
+            assert not self.use_dab, "use_dab must be True"
 
         self.reset_parameters()
 
@@ -58,7 +66,7 @@ class DeformableTransformer(nn.Module):
         for m in self.modules():
             if isinstance(m, MSDeformAttn):
                 m._reset_parameters()
-        if not self.two_stage:
+        if not self.two_stage and not self.use_dab:
             # 服从均匀分布的Glorot初始化器,预防一些参数过大或过小的情况，再保证方差一样的情况下进行缩放，便于计算
             xavier_uniform_(self.reference_points.weight.data, gain=1.0)
             constant_(self.reference_points.bias.data, 0.)
@@ -144,18 +152,18 @@ class DeformableTransformer(nn.Module):
         for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
             bs, c, h, w = src.shape
             spatial_shape = (h, w)
-            # bs, h, w, 256 -> h*w, bs, 256
+            # bs  h  w  256 -> hw  bs  256
             # 取样点即为特征图的宽高点
             spatial_shapes.append(spatial_shape)
             src = src.flatten(2).transpose(1, 2)
             mask = mask.flatten(1)
             pos_embed = pos_embed.flatten(2).transpose(1, 2)
-            # scale-level position embedding  [bs,hxw,c] + [1,1,c] -> [bs,hxw,c]
+            # scale-level position embedding  [bs hw c] + [1 1 c] -> [bs hxw c]
             # 每一层所有位置加上相同的level_embed 且 不同层的level_embed不同
             # 所以这里pos_embed + level_embed，这样即使不同层特征有相同的w和h，那么也会产生不同的lvl_pos_embed
             lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
             lvl_pos_embed_flatten.append(lvl_pos_embed)
-            # 得到的flatten维度为lvl，h*w, bs, 256
+            # 得到的flatten维度为lvl hw  bs  256
             src_flatten.append(src)
             mask_flatten.append(mask)
         # 将多尺度的信息进行拼接
@@ -185,6 +193,11 @@ class DeformableTransformer(nn.Module):
             init_reference_out = reference_points
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+        elif self.use_dab:
+            reference_points = query_embed[..., self.ffn_hidden_dim:].sigmoid() 
+            tgt = query_embed[..., :self.ffn_hidden_dim]
+            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+            init_reference_out = reference_points
         else:
             query_embed , tgt = torch.split(query_embed, c, dim=1)
             query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
@@ -202,12 +215,14 @@ class DeformableTransformer(nn.Module):
         # level_start_index: [4  ] 4个特征层flatten后的开始index
         # valid_ratios: [bs  4  2]
         # mask_flatten: 4个特征层flatten后的mask [bs  H/8*W/8+H/16*W/16+H/32*W/32+H/64*W/64]
-        # hs: 6层decoder输出 [n_decoder bs num_query d_model] = [6 bs 300 256]
+        # hs: 6层decoder输出 [n_decoder bs num_query ffn_hidden_dim] = [6 bs 300 256]
         # inter_references: 6层decoder学习到的参考点归一化中心坐标  [6 bs 300 2]
         #                   one-stage=[n_decoder bs num_query 2]  two-stage=[n_decoder bs num_query 4]
         hs, inter_references = self.decoder(tgt, reference_points, memory,
                                             spatial_shapes, level_start_index, 
-                                            valid_ratios, query_embed, mask_flatten)
+                                            valid_ratios, 
+                                            query_pos=query_embed if not self.use_dab else None,
+                                            src_padding_mask=mask_flatten)
         inter_references_out = inter_references
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
@@ -354,8 +369,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tgt
 
 class DeformableTransformerDecoder(nn.Module):
-    def __init__(self, 
-                 decoder_layer, num_layers, return_intermediate=False):
+    def __init__(self, decoder_layer, num_layers, return_intermediate=False, 
+                 use_dab=False,ffn_hidden_dim=256, high_dim_query_update=False, no_sine_embed=False):
         super().__init__()
         self.layers = get_clone(decoder_layer, num_layers)
         self.num_layers = num_layers
@@ -363,6 +378,19 @@ class DeformableTransformerDecoder(nn.Module):
 
         self.bbox_embed = None
         self.class_embed = None
+
+        self.use_dab = use_dab
+        self.ffn_hidden_dim = ffn_hidden_dim
+        self.no_sine_embed = no_sine_embed
+        if use_dab:
+            self.query_scale = MLP(ffn_hidden_dim, ffn_hidden_dim, ffn_hidden_dim, 2)
+            if self.no_sine_embed:
+                self.ref_point_head = MLP(4, ffn_hidden_dim, ffn_hidden_dim, 3)
+            else:
+                self.ref_point_head = MLP(2*ffn_hidden_dim, ffn_hidden_dim, ffn_hidden_dim, 2)
+        self.high_dim_query_update = high_dim_query_update
+        if high_dim_query_update:
+            self.high_dim_query_proj = MLP(ffn_hidden_dim, ffn_hidden_dim, ffn_hidden_dim, 2)
     
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index,
                 src_valid_ratios, query_pos=None, src_padding_mask=None):
@@ -375,6 +403,11 @@ class DeformableTransformerDecoder(nn.Module):
         src_level_start_index: [4,] 4个特征层flatten后的开始index
         src_padding_mask: 4个特征层flatten后的mask [bs  H/8*W/8+H/16*W/16+H/32*W/32+H/64*W/64]
         """
+        if self.use_dab:
+            assert query_pos is None
+            bs = src.shape[0]
+            reference_points = reference_points[None].repeat(bs, 1, 1) # bs, nq, 4(xywh)
+        
         output = tgt
 
         intermediate = []
@@ -387,6 +420,16 @@ class DeformableTransformerDecoder(nn.Module):
                 assert reference_points.shape[-1] == 2
                 # [bs 300 1 2] * [bs 1 4 2] -> [bs 300 4 2]=[bs n_query n_lvl 2]
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
+            if self.use_dab:
+                if self.no_sine_embed:
+                    raw_query_pos = self.ref_point_head(reference_points_input)
+                else:
+                    query_sine_embed = gen_sineembed_for_position(reference_points_input[:,:,0,:])
+                    raw_query_pos = self.ref_point_head(query_sine_embed)
+                pos_scale = self.query_scale(output) if lid != 0 else 1 # 重点， 只在第一层进行一次scale
+                query_pos = pos_scale * raw_query_pos
+            if self.high_dim_query_update and lid != 0:
+                query_pos = query_pos + self.high_dim_query_proj(output)
             # decoder layer
             # output: [bs 300 256] = self-attention输出特征 + cross-attention输出特征
             # 知道图像中物体与物体之间的关系 + encoder增强后的图像特征 + 图像与物体之间的关系
@@ -441,5 +484,6 @@ def build_deforamble_transformer(args):
         dec_n_points=args.dec_n_points,
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage,
-        two_stage_num_proposals=args.num_queries)
+        two_stage_num_proposals=args.num_queries,
+        use_dab=args.use_dab)
 

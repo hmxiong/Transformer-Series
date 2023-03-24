@@ -20,7 +20,7 @@ from model import build_model
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
-    parser.add_argument('--model_type', default='base', type=str)
+    parser.add_argument('--model_type','-m', default='base', type=str)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
     parser.add_argument('--batch_size', default=2, type=int)
@@ -38,7 +38,7 @@ def get_args_parser():
                         help="Name of the convolutional backbone to use")
     parser.add_argument('--dilation', action='store_true',
                         help="If true, we replace stride with dilation in the last convolutional block (DC5)")
-    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
+    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned','dab'),
                         help="Type of positional embedding to use on top of the image features")
 
     # * Transformer
@@ -50,11 +50,11 @@ def get_args_parser():
                         help="Intermediate size of the feedforward layers in the transformer blocks")
     parser.add_argument('--hidden_dim', default=256, type=int,
                         help="Size of the embeddings (dimension of the transformer)")
-    parser.add_argument('--dropout', default=0.1, type=float,
+    parser.add_argument('--dropout', default=0.1, type=float, # when using dab is 0
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=300, type=int,   # when using deformable and conitional is 300
+    parser.add_argument('--num_queries', default=100, type=int,   # when using deformable and conitional is 300
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 
@@ -64,9 +64,23 @@ def get_args_parser():
     parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
     parser.add_argument('--with_box_refine', default=False, action='store_true')
     parser.add_argument('--two_stage', default=False, action='store_true')
-    parser.add_argument('--cls_loss_coef', default=2, type=float)
-    parser.add_argument('--focal_alpha', default=0.25, type=float)
-    
+
+    # Variants of DAB DETR
+    parser.add_argument('--pe_temperatureH', default=20, type=int, 
+                        help="Temperature for height positional encoding.")
+    parser.add_argument('--pe_temperatureW', default=20, type=int, # setting the tempperture
+                        help="Temperature for width positional encoding.")
+    parser.add_argument('--batch_norm_type', default='FrozenBatchNorm2d', type=str, 
+                        choices=['SyncBatchNorm', 'FrozenBatchNorm2d', 'BatchNorm2d'], help="batch norm type for backbone")
+    parser.add_argument('--num_select', default=100, type=int,  # when using DAB this is 300 and when using dab deformabel is 100
+                        help='the number of predictions selected for evaluation')
+    parser.add_argument('--transformer_activation', default='prelu', type=str)
+    parser.add_argument('--num_patterns', default=0, type=int, 
+                        help='number of pattern embeddings. See Anchor DETR for more details.')
+    parser.add_argument('--random_refpoints_xy', action='store_true', 
+                        help="Random init the x,y of anchor boxes and freeze them.")
+    parser.add_argument('--use_dab', default=False, action='store_true')
+
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
                         help="Train segmentation head if the flag is provided")
@@ -82,6 +96,8 @@ def get_args_parser():
     parser.add_argument('--set_cost_giou', default=2, type=float,
                         help="giou box coefficient in the matching cost")
     # * Loss coefficients
+    parser.add_argument('--cls_loss_coef', default=2, type=float) # when using dab is 1 deformabel is 2
+    parser.add_argument('--focal_alpha', default=0.25, type=float)
     parser.add_argument('--mask_loss_coef', default=1, type=float)
     parser.add_argument('--dice_loss_coef', default=1, type=float)
     parser.add_argument('--bbox_loss_coef', default=5, type=float)
@@ -137,6 +153,8 @@ def main(args):
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
+    print("params:\n"+json.dumps({n: p.numel() for n, p in model.named_parameters() if p.requires_grad}, indent=2))
+
 
     param_dicts = [
         {"params": [p for n, p in model_without_ddp.named_parameters() if "backbone" not in n and p.requires_grad]},

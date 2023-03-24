@@ -11,13 +11,14 @@
 - pycocotools = 2.0
 ## Conditional-DETR-R50
 Command:
-```
+```bash
 python main.py --model_type conditional --batch_size 2 --eval \
+               --num_select 300 \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.409
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.619
@@ -34,14 +35,15 @@ IoU metric: bbox
 ```
 ## Conditional-DETR-R50-DC5
 Command:
-```
+```bash
 python main.py --model_type conditional  --dilation \
-               --batch_size 2 --eval \
+               --batch_size 1 --num_select 300  --eval \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
+# when using DC5, batch size must be 1
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.437
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.644
@@ -58,14 +60,15 @@ IoU metric: bbox
 ```
 ## Conditional-DETR-R101-DC5
 Command:
-```
+```bash
 python main.py --model_type conditional  --backbone resnet101 \
-               --dilation --batch_size 2 --eval \
+               --dilation --batch_size 1 --num_select 300 --eval \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
+# when using DC5, batch size must be 1
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.450
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.655

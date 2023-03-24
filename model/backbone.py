@@ -52,7 +52,7 @@ class BackboneBase(nn.Module):  # using model_type to change the structure
                 parameter.requires_grad_(False)
         # print(model_type)
         # print(return_interm_layers)
-        if model_type == 'base' or model_type =='conditional':
+        if model_type in ['base','conditional','dab']:
             # print('base')
             if return_interm_layers :
                 return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
@@ -64,7 +64,7 @@ class BackboneBase(nn.Module):  # using model_type to change the structure
                 # 执行torchvision.models._utils.IntermediateLayerGetter
                 # 这个函数可以直接返回对应层的输出结果
             self.num_channels = num_channels
-        elif model_type == 'deformable': # deformable detr系列的模型配置
+        elif model_type in ['deformable']: # deformable detr系列的模型配置
             # print('deformable')
             if return_interm_layers:
                 # print('deformable')

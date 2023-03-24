@@ -11,13 +11,14 @@
 - pycocotools = 2.0
 ## Deformable-DETR-R50
 Command:
-```
+```bash
 python main.py --model_type deformable --batch_size 2 --eval \
+               --num_select 100 --dim_feedforward 1024 --no_aux_loss --num_queries 300\
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.444
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.635
@@ -35,14 +36,15 @@ IoU metric: bbox
 There is somting wrong with the alignment and I am searching the problem
 ## Deformable-DETR-R50 + iterative bounding box refinement
 Command:
-```
+```bash
 python main.py --model_type deformable  --with_box_refine \
-               --batch_size 2 --eval \
+               --batch_size 2 --num_select 100 --dim_feedforward 1024 --num_queries 300 \
+               --no_aux_loss --eval \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.463
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.650
@@ -60,14 +62,15 @@ IoU metric: bbox
 There is somting wrong with the alignment and I am searching the problem
 ## Deformable-DETR-R50 + iterative bounding box refinement + two_stage
 Command:
-```
+```bash
 python main.py --model_type deformable  --with_box_refine --two_stage \
-               --batch_size 2 --eval \
+               --batch_size 2 --num_select 100 --dim_feedforward 1024 --num_queries 300 \
+               --no_aux_loss --eval \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.470
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.657

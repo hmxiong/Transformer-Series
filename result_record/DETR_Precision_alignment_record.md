@@ -11,13 +11,13 @@
 - pycocotools = 2.0
 ## DETR-R50
 Command:
-```
+```bash
 python main.py --batch_size 2 --no_aux_loss --eval \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.420
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.624
  Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.442
@@ -33,14 +33,14 @@ COCO detection val5k evaluation results:
 ```
 ## DETR-R50-DC5
 Command:
-```
+```bash
 python main.py --no_aux_loss --eval \
     --batch_size 1 --dilation \
     --resume path/to/checkpoints \
     --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.433
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.631
  Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.459
@@ -56,14 +56,14 @@ COCO detection val5k evaluation results:
 ```
 ## DETR R101
 Command:
-```
+```bash
 python main.py --batch_size 2 --no_aux_loss --eval \
     --backbone resnet101 \
     --resume path/to/checkpoints \
     --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
 IoU metric: bbox
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.435
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.638
@@ -81,7 +81,7 @@ IoU metric: bbox
 ```
 ## DETR R101-DC5
 Command:
-```
+```bash
 python main.py --no_aux_loss --eval \
     --backbone resnet101 \
     --batch_size 1 --dilation \
@@ -89,7 +89,7 @@ python main.py --no_aux_loss --eval \
     --coco_path path/to/coco
 ```
 COCO detection val5k evaluation results:
-```
+```bash
  Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.449
  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.647
  Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.477

@@ -7,5 +7,3 @@ git+https://github.com/cocodataset/panopticapi.git#egg=panopticapi
 scipy
 onnx
 onnxruntime
-
-# python main.py --batch_size 1 --no_aux_loss --eval --resume /root/autodl-tmp/Transformer-Series/checkpoints/detr-r50-e632da11.pth --coco_path /root/autodl-tmp/coco

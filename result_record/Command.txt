@@ -1,0 +1,10 @@
+--proxy=127.0.0.1:7890
+
+python main.py --model_type conditional --batch_size 1 --no_aux_loss --eval --resume F:/ProjectWorkplace/VOD/Transformer-Series/checkpoints/ConditionalDETR_r50_epoch50.pth --coco_path F:/All_Data/coco
+python main.py --model_type conditional --backbone resnet101 --dilation --batch_size 1 --no_aux_loss --eval --resume F:/ProjectWorkplace/VOD/Transformer-Series/checkpoints/ConditionalDETR_r101dc5_epoch50.pth --coco_path F:/All_Data/coco
+--dilation F:\ProjectWorkplace\VOD\Transformer-Series\checkpoints\ConditionalDETR_r101dc5_epoch50.pth https://download.pytorch.org/models/resnet101-63fe2227.pth
+
+python main.py --model_type deformable  --with_box_refine --two_stage --batch_size 1 --no_aux_loss --eval --resume F:/ProjectWorkplace/VOD/Transformer-Series/checkpoints/r50_deformable_detr_plus_iterative_bbox_refinement_plus_plus_two_stage-checkpoint.pth --coco_path /home/haomiaoxiong/All_Data/coco
+
+
+python main.py --model_type base --batch_size 1 --no_aux_loss --eval --resume F:/ProjectWorkplace/VOD/Transformer-Series/checkpoints/r50_deformable_detr_plus_iterative_bbox_refinement_plus_plus_two_stage-checkpoint.pth --coco_path F:/All_Data/coco

@@ -11,6 +11,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .transformer import build_transformer
 from tools.misc import inverse_sigmoid
+import copy
 
 class MLP(nn.Module):
     """ a simple mlp perception (FeedForwardNetwork)"""
@@ -144,6 +145,128 @@ class ConditionalDETR(nn.Module):
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
+class DABDETR(nn.Module):
+    """ This is the DAB-DETR module that performs object detection """
+    def __init__(self, backbone, transformer, num_classes, num_queries, 
+                    aux_loss=False, 
+                    iter_update=True,
+                    query_dim=4, 
+                    bbox_embed_diff_each_layer=False,
+                    random_refpoints_xy=False,
+                    ):
+        """ Initializes the model.
+        Parameters:
+            backbone: torch module of the backbone to be used. See backbone.py
+            transformer: torch module of the transformer architecture. See transformer.py
+            num_classes: number of object classes
+            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
+                         Conditional DETR can detect in a single image. For COCO, we recommend 100 queries.
+            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+            iter_update: iterative update of boxes
+            query_dim: query dimension. 2 for point and 4 for box.
+            bbox_embed_diff_each_layer: dont share weights of prediction heads. Default for False. (shared weights.)
+            random_refpoints_xy: random init the x,y of anchor boxes and freeze them. (It sometimes helps to improve the performance)
+            
+        """
+        super().__init__()
+        self.num_queries = num_queries
+        self.transformer = transformer
+        hidden_dim = transformer.ffn_hidden_dim
+        self.class_embed = nn.Linear(hidden_dim, num_classes)
+        self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
+        if bbox_embed_diff_each_layer:
+            self.bbox_embed = nn.ModuleList([MLP(hidden_dim, hidden_dim, 4, 3) for i in range(6)])
+        else:
+            self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        
+
+        # setting query dim
+        self.query_dim = query_dim
+        assert query_dim in [2, 4]
+        
+        # 创建的一个初始的Embedding层作为位置先验信息进行处理和优化
+        self.refpoint_embed = nn.Embedding(num_queries, query_dim)
+        self.random_refpoints_xy = random_refpoints_xy
+        if random_refpoints_xy:
+            # 对先验知识进行相应的初始化
+            # import ipdb; ipdb.set_trace()
+            self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
+            self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
+            self.refpoint_embed.weight.data[:, :2].requires_grad = False
+
+
+        # 在正式送进Transformer进行计算之前需要对目前已知数据的维度进行一次投影
+        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        self.backbone = backbone
+        self.aux_loss = aux_loss
+        self.iter_update = iter_update
+
+        if self.iter_update:
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+
+
+        # init prior_prob setting for focal loss
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+
+        # import ipdb; ipdb.set_trace()
+        # init bbox_embed
+        if bbox_embed_diff_each_layer:
+            for bbox_embed in self.bbox_embed:
+                nn.init.constant_(bbox_embed.layers[-1].weight.data, 0)
+                nn.init.constant_(bbox_embed.layers[-1].bias.data, 0)
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+
+        
+
+    def forward(self, samples: NestedTensor):
+
+        if isinstance(samples, (list, torch.Tensor)):
+            samples = nested_tensor_from_tensor_list(samples)
+        features, pos = self.backbone(samples)
+
+        src, mask = features[-1].decompose()
+        assert mask is not None
+        # default pipeline
+        embedweight = self.refpoint_embed.weight
+        # print()
+        # [6, 1, 300, 256]) ([6, 1, 300, 4])
+        hs, reference = self.transformer(self.input_proj(src), mask, embedweight, pos[-1])
+        # print(hs.shape, reference.shape)
+        
+        
+        if not self.bbox_embed_diff_each_layer:
+            reference_before_sigmoid = inverse_sigmoid(reference)
+            tmp = self.bbox_embed(hs)
+            tmp[..., :self.query_dim] += reference_before_sigmoid
+            outputs_coord = tmp.sigmoid()
+        else:
+            reference_before_sigmoid = inverse_sigmoid(reference)
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                tmp[..., :self.query_dim] += reference_before_sigmoid[lvl]
+                outputs_coord = tmp.sigmoid()
+                outputs_coords.append(outputs_coord)
+            outputs_coord = torch.stack(outputs_coords)
+
+        outputs_class = self.class_embed(hs)
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        if self.aux_loss:
+            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        return out
+
+    @torch.jit.unused
+    def _set_aux_loss(self, outputs_class, outputs_coord):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [{'pred_logits': a, 'pred_boxes': b}
+                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
     The process happens in two steps:
@@ -160,15 +283,16 @@ class SetCriterion(nn.Module):
             losses: list of all the losses to be applied. See get_loss for list of available losses.
         """
         super().__init__()
-        if model_type == 'deformable' or model_type == 'conditional':
+        if model_type in ['deformable', 'conditional','dab']:
+            print("SetCriterion type:", model_type)
             self.num_classes = num_classes
             self.matcher = matcher
             self.weight_dict = weight_dict
             self.losses = losses
             self.focal_alpha = focal_alpha
-            self.num_classes = num_classes
             self.model_type = model_type
         else:
+            self.num_classes = num_classes
             self.matcher = matcher
             self.weight_dict = weight_dict
             self.eos_coef = eos_coef
@@ -194,7 +318,8 @@ class SetCriterion(nn.Module):
         
         if self.model_type == 'base':
             loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        elif self.model_type == 'deformable' or self.model_type =='conditional' :
+        elif self.model_type in ['deformable', 'conditional','dab']:
+            # print("loss_labels type: %s", self.model_type)
             target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
             target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
@@ -241,6 +366,12 @@ class SetCriterion(nn.Module):
                                    box_cxcywh_to_xyxy(src_boxes),
                                    box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
+
+        if self.model_type in ['dab']:
+            with torch.no_grad():
+                losses['loss_xy'] = loss_bbox[..., :2].sum() / num_boxes
+                losses['loss_hw'] = loss_bbox[..., 2:].sum() / num_boxes
+
         return losses
     
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -294,7 +425,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets,return_indices=False):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -305,6 +436,9 @@ class SetCriterion(nn.Module):
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
+        if return_indices:
+            indices0_copy = indices
+            indices_list = []
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -316,7 +450,8 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            kwargs = {}
+            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
@@ -334,15 +469,41 @@ class SetCriterion(nn.Module):
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
+        # if 'enc_outputs' in outputs:
+        #     enc_outputs = outputs['enc_outputs']
+        #     bin_targets = copy.deepcopy(targets)
+        #     for bt in bin_targets:
+        #         bt['labels'] = torch.zeros_like(bt['labels'])
+        #     if os.environ.get('IPDB_SHILONG_DEBUG') == 'INFO':
+        #         import ipdb; ipdb.set_trace()
+        #     indices = self.matcher(enc_outputs, bin_targets)
+        #     for loss in self.losses:
+        #         if loss == 'masks':
+        #             # Intermediate masks losses are too costly to compute, we ignore them.
+        #             continue
+        #         kwargs = {}
+        #         if loss == 'labels':
+        #             # Logging is enabled only for the last layer
+        #             kwargs['log'] = False
+        #         l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+        #         l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+        #         losses.update(l_dict)
+
+        if return_indices:
+            indices_list.append(indices0_copy)
+            return losses, indices_list
+
         return losses
 
 
 class PostProcess(nn.Module):
     # 模型的后处理部分，完成后续最后的检测框的输出
     """ This module converts the model's output into the format expected by the coco api"""
-    def __init__(self, model_type):
+    def __init__(self, model_type, num_select):
         super().__init__()
         self.model_type = model_type
+        self.num_select = num_select
+        print("PostProcess type: ", self.model_type)
         # self.outputs = outputs
         # self.target_sizes = target_sizes
         
@@ -355,6 +516,7 @@ class PostProcess(nn.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
+        num_select = self.num_select
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
         assert len(out_logits) == len(target_sizes)
@@ -366,9 +528,9 @@ class PostProcess(nn.Module):
 
             # convert to [x0, y0, x1, y1] format
             boxes = box_cxcywh_to_xyxy(out_bbox)
-        elif self.model_type == 'deformable' or self.model_type == 'conditional':
+        elif self.model_type in ['deformable', 'conditional', 'dab']:
             prob = out_logits.sigmoid()
-            topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
+            topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), num_select, dim=1)
             scores = topk_values
             topk_boxes = topk_indexes // out_logits.shape[2]
             labels = topk_indexes % out_logits.shape[2]
@@ -405,6 +567,7 @@ def build(args):
     transformer = build_transformer(args)
     
     if model_type == 'base':
+        print("model type: base")
         model = DETR(
                     backbone,
                     transformer,
@@ -413,12 +576,25 @@ def build(args):
                     aux_loss=args.aux_loss,
                 )
     elif model_type == 'conditional':
+        print("model type: conditional")
         model = ConditionalDETR(
                     backbone,
                     transformer,
                     num_classes=num_classes,
                     num_queries=args.num_queries,
                     aux_loss=args.aux_loss,
+                )
+    elif model_type == 'dab':
+        print("model type: dab")
+        model = DABDETR(
+                    backbone,
+                    transformer,
+                    num_classes=num_classes,
+                    num_queries=args.num_queries,
+                    aux_loss=args.aux_loss,
+                    iter_update=True,
+                    query_dim=4,
+                    random_refpoints_xy=args.random_refpoints_xy,
                 )
     
     matcher = build_matcher(args)
@@ -437,7 +613,7 @@ def build(args):
                              eos_coef=args.eos_coef, focal_alpha=args.focal_alpha, 
                              losses=losses, model_type=model_type)
     criterion.to(device)
-    postprocessors = {'bbox': PostProcess(model_type)}
+    postprocessors = {'bbox': PostProcess(model_type, num_select=args.num_select)}
 
     return model, criterion, postprocessors
 
