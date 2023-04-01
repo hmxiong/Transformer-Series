@@ -11,7 +11,8 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .transformer import build_transformer
 from tools.misc import inverse_sigmoid
-import copy
+from .dn_components import prepare_for_dn, dn_post_process, compute_dn_loss
+
 
 class MLP(nn.Module):
     """ a simple mlp perception (FeedForwardNetwork)"""
@@ -153,6 +154,7 @@ class DABDETR(nn.Module):
                     query_dim=4, 
                     bbox_embed_diff_each_layer=False,
                     random_refpoints_xy=False,
+                    use_dn=False,
                     ):
         """ Initializes the model.
         Parameters:
@@ -171,20 +173,29 @@ class DABDETR(nn.Module):
         super().__init__()
         self.num_queries = num_queries
         self.transformer = transformer
-        hidden_dim = transformer.ffn_hidden_dim
+        self.hidden_dim = hidden_dim = transformer.ffn_hidden_dim
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
+
         if bbox_embed_diff_each_layer:
             self.bbox_embed = nn.ModuleList([MLP(hidden_dim, hidden_dim, 4, 3) for i in range(6)])
         else:
             self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         
+        # DeNoising Setting
+        # 注意这里Embedding的参数设置
+        # 输入维度为num_classe + 1是为了好添加后续的indictor
+        self.use_dn = use_dn
+        if self.use_dn:
+            self.label_enc = nn.Embedding(num_classes + 1, hidden_dim - 1)
+            self.num_classes = num_classes
 
         # setting query dim
         self.query_dim = query_dim
         assert query_dim in [2, 4]
         
         # 创建的一个初始的Embedding层作为位置先验信息进行处理和优化
+        # [300 4]
         self.refpoint_embed = nn.Embedding(num_queries, query_dim)
         self.random_refpoints_xy = random_refpoints_xy
         if random_refpoints_xy:
@@ -222,7 +233,7 @@ class DABDETR(nn.Module):
 
         
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, dn_args = None):
 
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
@@ -233,8 +244,16 @@ class DABDETR(nn.Module):
         # default pipeline
         embedweight = self.refpoint_embed.weight
         # print()
-        # [6, 1, 300, 256]) ([6, 1, 300, 4])
-        hs, reference = self.transformer(self.input_proj(src), mask, embedweight, pos[-1])
+
+        # prepare fo dn training
+        input_query_label, input_query_bbox, attn_mask, mask_dict = \
+           prepare_for_dn(dn_args, embedweight, src.size(0), self.training, self.num_queries,
+                          self.num_classes, self.hidden_dim, self.label_enc)
+        # print(input_query_label.shape)
+        hs, reference = self.transformer(self.input_proj(src), mask, input_query_bbox, pos[-1], tgt=input_query_label,
+                                         attn_mask=attn_mask)
+        # [6, 1, 300, 256]) ([6, 1, 300, 4])输出的是6层decoder的输出
+        # hs, reference = self.transformer(self.input_proj(src), mask, embedweight, pos[-1])
         # print(hs.shape, reference.shape)
         
         
@@ -254,10 +273,15 @@ class DABDETR(nn.Module):
             outputs_coord = torch.stack(outputs_coords)
 
         outputs_class = self.class_embed(hs)
+
+        # DeNoising Post Process
+        if self.use_dn:
+            outputs_class , outputs_coord = dn_post_process(outputs_class, outputs_coord, mask_dict)
+        
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
-        return out
+        return out, mask_dict
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -273,7 +297,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, focal_alpha, losses, model_type):
+    def __init__(self, num_classes, matcher, weight_dict, eos_coef, focal_alpha, losses, model_type, use_dn = False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -291,6 +315,7 @@ class SetCriterion(nn.Module):
             self.losses = losses
             self.focal_alpha = focal_alpha
             self.model_type = model_type
+            self.use_dn = use_dn
         else:
             self.num_classes = num_classes
             self.matcher = matcher
@@ -425,7 +450,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets,return_indices=False):
+    def forward(self, outputs, targets,return_indices=False ,mask_dict=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -468,27 +493,15 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-
-        # if 'enc_outputs' in outputs:
-        #     enc_outputs = outputs['enc_outputs']
-        #     bin_targets = copy.deepcopy(targets)
-        #     for bt in bin_targets:
-        #         bt['labels'] = torch.zeros_like(bt['labels'])
-        #     if os.environ.get('IPDB_SHILONG_DEBUG') == 'INFO':
-        #         import ipdb; ipdb.set_trace()
-        #     indices = self.matcher(enc_outputs, bin_targets)
-        #     for loss in self.losses:
-        #         if loss == 'masks':
-        #             # Intermediate masks losses are too costly to compute, we ignore them.
-        #             continue
-        #         kwargs = {}
-        #         if loss == 'labels':
-        #             # Logging is enabled only for the last layer
-        #             kwargs['log'] = False
-        #         l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-        #         l_dict = {k + f'_enc': v for k, v in l_dict.items()}
-        #         losses.update(l_dict)
-
+        
+        # DeNoising Losss Computation
+        if self.use_dn:
+            aux_num = 0
+            if 'aux_outputs' in outputs:
+                aux_num = len(outputs['aux_outputs'])
+            dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
+            losses.update(dn_losses)
+        
         if return_indices:
             indices_list.append(indices0_copy)
             return losses, indices_list
@@ -595,11 +608,18 @@ def build(args):
                     iter_update=True,
                     query_dim=4,
                     random_refpoints_xy=args.random_refpoints_xy,
+                    use_dn = args.use_dn,
                 )
     
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': 1, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
+    # DeNoising Loss Calculate
+    if args.use_dn:
+        weight_dict['tgt_loss_ce'] = args.cls_loss_coef
+        weight_dict['tgt_loss_bbox'] = args.bbox_loss_coef
+        weight_dict['tgt_loss_giou'] = args.giou_loss_coef
+
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -611,7 +631,7 @@ def build(args):
 
     criterion = SetCriterion(num_classes,  matcher=matcher, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, focal_alpha=args.focal_alpha, 
-                             losses=losses, model_type=model_type)
+                             losses=losses, model_type=model_type, use_dn = args.use_dn)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess(model_type, num_select=args.num_select)}
 

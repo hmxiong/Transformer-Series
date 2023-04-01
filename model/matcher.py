@@ -46,7 +46,7 @@ class HungarianMatcher(nn.Module):
         
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
-        # 计算相应的giou损失函数带来的影响，但是我的问题是为什么需要问号
+        # 计算相应的giou损失函数带来的影响，匹配值越大，相应的进入loss计算的也就越小
         cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
                                          box_cxcywh_to_xyxy(tgt_bbox))
         # Final cost matrix   [100, 3]  bs*100个预测框分别和3个gt框的损失矩阵

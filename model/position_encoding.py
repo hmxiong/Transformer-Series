@@ -78,8 +78,8 @@ class PositionEmbeddingSineHW(nn.Module):
         
         if self.normalize:
             eps = 1e-6
-            y_embed = (y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale
-            x_embed = (x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale
+            y_embed = (y_embed) / (y_embed[:, -1:, :] + eps) * self.scale
+            x_embed = (x_embed) / (x_embed[:, :, -1:] + eps) * self.scale
         
         # 通过temperatureW 和temperatureH能够对于x y轴的坐标设置不同的温度系数从而改变相应的位置编码情况
         dim_tx = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)

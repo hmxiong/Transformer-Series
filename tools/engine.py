@@ -63,7 +63,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir ,args=None,):
+    try:
+        need_tgt_for_training = args.use_dn
+    except:
+        need_tgt_for_training = False
+
     model.eval()
     criterion.eval()
 
@@ -87,7 +92,11 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
+        # outputs = model(samples)
+        if need_tgt_for_training:
+            outputs, _ = model(samples, dn_args=args.num_patterns)
+        else:
+            outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 

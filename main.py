@@ -80,6 +80,23 @@ def get_args_parser():
     parser.add_argument('--random_refpoints_xy', action='store_true', 
                         help="Random init the x,y of anchor boxes and freeze them.")
     parser.add_argument('--use_dab', default=False, action='store_true')
+    
+    # Variants of DN Options
+    parser.add_argument('--use_dn', action="store_true",
+                        help="use denoising training.")
+    parser.add_argument('--scalar', default=5, type=int,
+                        help="number of dn groups")
+    parser.add_argument('--label_noise_scale', default=0.2, type=float,
+                        help="label noise ratio to flip")
+    parser.add_argument('--box_noise_scale', default=0.4, type=float,
+                        help="box noise scale to shift and scale")
+    parser.add_argument('--contrastive', action="store_true",
+                        help="use contrastive training.")
+    parser.add_argument('--use_mqs', action="store_true",
+                        help="use mixed query selection from DINO.")
+    parser.add_argument('--use_lft', action="store_true",
+                        help="use look forward twice from DINO.")
+
 
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
@@ -211,7 +228,7 @@ def main(args):
 
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
+                                              data_loader_val, base_ds, device, args.output_dir, args=args)
         if args.output_dir:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return

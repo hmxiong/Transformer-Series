@@ -34,7 +34,8 @@ class Transformer(nn.Module):
                  num_patterns=0,
                  modulate_hw_attn=True,
                  bbox_embed_diff_each_layer=False,
-                 num_queries=300):
+                 num_queries=300,
+                 use_dn=False):
         super().__init__()
 
         encoder_layer = TransformerEncoderLayer(ffn_hidden_dim,nhead,dim_feedforward,
@@ -84,6 +85,9 @@ class Transformer(nn.Module):
         self.dec_layers = num_decoder_layers # conditional detr
         
         self.model_type = model_type
+
+        # DeNoisng 
+        self.use_dn = use_dn
         
         # DAB module
         self.num_queries = num_queries
@@ -100,18 +104,22 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, src, mask, query_embed, pos_embed):
+    def forward(self, src, mask, query_embed, pos_embed, tgt=None, attn_mask=None):
         bs,c,h,w = src.shape
         src = src.flatten(2).permute(2,0,1)
         pos_embed = pos_embed.flatten(2).permute(2,0,1) # flattne N,C,H,W -> HW,N,c
         # query_embed一个可学习的embedding层，作为另外一种位置编码来理解
-        query_embed = query_embed.unsqueeze(1).repeat(1,bs,1) # 创建新的维度并重复 100 256 -> 100 bs 256
+        if not self.use_dn:
+            query_embed = query_embed.unsqueeze(1).repeat(1,bs,1) # 创建新的维度并重复 100 256 -> 100 bs 256
+            tgt = torch.zeros_like(query_embed)
+        else:
+            refpoint_embed = query_embed
         mask = mask.flatten(1) # # flattne C,H,W -> C,HW
         # print(pos_embed.shape)
         # print(query_embed.shape)
 
         # 一个和embedding维度保持一致的输入tgt
-        tgt = torch.zeros_like(query_embed)
+        # tgt = torch.zeros_like(query_embed)
         memory = self.encoder(src,src_key_padding_mask=mask, pos=pos_embed)
         if self.model_type == 'base':
             hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
@@ -123,16 +131,27 @@ class Transformer(nn.Module):
                           pos=pos_embed, query_pos=query_embed)
             return hs, references
         elif self.model_type == 'dab':
-            num_queries = query_embed.shape[0]
-            # print(query_embed.shape)
-            if self.num_patterns == 0:
-                tgt = torch.zeros(num_queries, bs, self.ffn_hidden_dim, device=query_embed.device)
+            # 确定是否基于DAB进行DeNoising处理来进行decoder计算
+            if self.use_dn:
+                if self.num_patterns > 0:
+                    l = tgt.shape[0]
+                    print(tgt.shape)
+                    tgt[l - self.num_queries * self.num_patterns:] += \
+                        self.patterns.weight[:, None, None, :].repeat(1, self.num_queries, bs, 1).flatten(0, 1)
+                # print(tgt.shape)
+                hs, references = self.decoder(tgt, memory, tgt_mask=attn_mask, memory_key_padding_mask=mask,
+                                pos=pos_embed, refpoints_unsigmoid=refpoint_embed)
             else:
-                tgt = self.patterns.weight[:, None, None, :].repeat(1, self.num_queries, bs, 1).flatten(0, 1) # n_q*n_pat, bs, ffn_hidden_dim
-                query_embed = query_embed.repeat(self.num_patterns, 1, 1) # n_q*n_pat, bs, ffn_hidden_dim
-                # import ipdb; ipdb.set_trace()
-            hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
-                            pos=pos_embed, refpoints_unsigmoid=query_embed)
+                num_queries = query_embed.shape[0]
+                # print(query_embed.shape)
+                if self.num_patterns == 0:
+                    tgt = torch.zeros(num_queries, bs, self.ffn_hidden_dim, device=query_embed.device)
+                else:
+                    tgt = self.patterns.weight[:, None, None, :].repeat(1, self.num_queries, bs, 1).flatten(0, 1) # n_q*n_pat, bs, ffn_hidden_dim
+                    query_embed = query_embed.repeat(self.num_patterns, 1, 1) # n_q*n_pat, bs, ffn_hidden_dim
+                    # import ipdb; ipdb.set_trace()
+                hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                                pos=pos_embed, refpoints_unsigmoid=query_embed)
             return hs, references
 
 class TransformerEncoder(nn.Module):
@@ -538,13 +557,14 @@ class ConditionalTransformerDecoderLayer(nn.Module):
         q = q.view(num_queries, bs, self.nhead, n_model//self.nhead)
         # 做一次projection
         query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
+        # 数据解耦
         query_sine_embed = query_sine_embed.view(num_queries, bs, self.nhead, n_model//self.nhead)
         # 将数据按照head进行分离再融合到一起完成整体的拼接
         q = torch.cat([q, query_sine_embed], dim=3).view(num_queries, bs, n_model * 2)# hw bs 512
         k = k.view(hw, bs, self.nhead, n_model//self.nhead)
         k_pos = k_pos.view(hw, bs, self.nhead, n_model//self.nhead)
         k = torch.cat([k, k_pos], dim=3).view(hw, bs, n_model * 2) # hw bs 512
-        # 所有的q k v的数据维度都是保持一致
+        # 所有的q k的数据维度都是保持一致，但是和v不一样
 
         tgt2 = self.cross_attn(query=q,
                                 key=k,
@@ -914,4 +934,5 @@ def build_transformer(args):
         query_dim=4,
         activation=args.transformer_activation,
         num_patterns=args.num_patterns,
+        use_dn = args.use_dn, 
     )

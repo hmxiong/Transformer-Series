@@ -9,7 +9,8 @@ This project is mainly used to complete the paper reproduction and precision ali
 - numpy = 1.23.5 pycocotools = 2.0  scipy = 1.7.1
 
 ## What's New
-- Support **DAB-DETR** and **DAB-Deformable-DETR** .
+- [23.4.1] Support **DN-DETR**.
+- Support **DAB-DETR** and **DAN-Deformable-DETR** .
 
 
 
@@ -22,8 +23,8 @@ This project is mainly used to complete the paper reproduction and precision ali
 - ✅ [Conditional-DETR](./result_record/Conditional_DETR_Precision_alignment.md)
 - ✅ [DAB-DETR](./result_record/DAB_DETR_Precision_alignment.md)
 - ✅ [DAB-Deformable-DETR](./result_record/DAB_DETR_Precision_alignment.md)
--  [DN-DETR](comming soon)
--  [DINO]
+- ✅ [DN-DETR](./result_record/DN_DETR_Precision_alignment.md)
+-  [DINO](comming soom)
 </details>
 
 
