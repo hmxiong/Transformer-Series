@@ -30,8 +30,8 @@ class PositionEmbeddingSine(nn.Module):
         if self.normalize:
             eps = 1e-6
             # 取每组数据的最后一个进行归一化计算
-            y_embed = (y_embed - 0.5) / (y_embed[:,-1:,:] + eps) * self.scale
-            x_embed = (x_embed - 0.5) / (x_embed[:,:,-1:] + eps) * self.scale
+            y_embed = (y_embed) / (y_embed[:,-1:,:] + eps) * self.scale
+            x_embed = (x_embed) / (x_embed[:,:,-1:] + eps) * self.scale
         # 对应的就是公式上面的时间变化程度 64
         dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device =x.device)
         # 2i/2i+1: 2 * (dim_t // 2)  self.temperature=10000   self.num_pos_feats = d/2

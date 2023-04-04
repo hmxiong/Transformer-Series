@@ -419,12 +419,13 @@ class ConditionalTransformerDecoder(nn.Module):
         output = tgt
 
         intermediate = []
-        # 将原始的256维的信息转为一个2D的位置信息进行后续的修正
+        # 将原始的256维的信息转为一个2D的中心点位置信息进行后续的修正
         reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
         reference_points = reference_points_before_sigmoid.sigmoid().transpose(0, 1)
 
         for layer_id, layer in enumerate(self.layers):
-            obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
+            # [num_queries, batch_size, 2]
+            obj_center = reference_points[..., :2].transpose(0, 1)      
 
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:

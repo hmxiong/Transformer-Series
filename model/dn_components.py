@@ -34,8 +34,8 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
 
     return loss.mean(1).sum() / num_boxes
 
-def prepare_for_dn(dn_args, embedweight, batch_size, training, 
-                   num_queries, num_classes, hidden_dim, label_enc):
+def prepare_for_dn(dn_args, tgt_weight, embedweight, batch_size, training, 
+                   num_queries, num_classes, hidden_dim, label_enc, model_type):
     """
     进行标签和数据的加噪过程， 为去噪算法做准备
 
@@ -59,10 +59,14 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
     # 由于去噪任务的 label noise 是在 gt label(0~num_classes-1) 上加噪，
     # 因此这里 tgt 的初始化值是 num_classes，代表 non-object，以区去噪任(dn)务和匹配(matching)任务
     # hidden_dim-1 -> num_queries*num_patterns  hidden_dim-1
-    tgt = label_enc(torch.tensor(num_classes).cuda()).repeat(num_queries * num_patterns, 1)
-    tgt = torch.cat([tgt, indicator0],dim=1)
+    if model_type in ['dab']:
+        tgt = label_enc(torch.tensor(num_classes).cuda()).repeat(num_queries * num_patterns, 1)
+        tgt = torch.cat([tgt, indicator0],dim=1)
+        refpoint_emb = embedweight.repeat(num_patterns, 1)
+    elif model_type in ['deformable']:
+        tgt = torch.cat([tgt_weight, indicator0], dim=1) + label_enc.weight[0][0]*torch.tensor(0).cuda()
+        refpoint_emb = embedweight
     # num_queries 4 -> num_queries*num_patterns 4
-    refpoint_emb = embedweight.repeat(num_patterns, 1)
     if training:
         # 计算一些相关的索引用于后续计算进行query和gt之间的匹配
         known = [(torch.ones_like(t['labels'])).cuda() for t in targets]
@@ -74,7 +78,7 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
         
         # 对 gt 在整个 batch 中计算索引
         # (num_gts_batch,) 其中都是1
-        unmaks_bbox = unmask_label = torch.cat(known)
+        unmask_bbox = unmask_label = torch.cat(known)
         # gt_labels num_gts_batch 
         labels = torch.cat([t['labels'] for t in targets])
         # gt_boxes num_gts_batch 4
@@ -86,9 +90,12 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
         # # 将以上“复制”到所有去噪组
         # (num_gts_batch,4)->(scalar*num_gts_batch,4)
         known_indice = torch.nonzero(unmask_label + unmask_bbox)
+        known_indice = known_indice.view(-1)
+
+        known_indice = known_indice.repeat(scalar, 1).view(-1)
         known_labels = labels.repeat(scalar, 1).view(-1)
         known_bid = batch_idx.repeat(scalar, 1).view(-1)
-        known_bboxs = boxes.repeat(scalar, 1).view(-1)
+        known_bboxs = boxes.repeat(scalar, 1)
         # 用于准备在label上进行加噪
         known_labels_expaned = known_labels.clone()
         # 用于准备在bbox上进行加噪
@@ -151,7 +158,7 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
             if i == 0:
                 attn_mask[single_pad * i:single_pad * (i + 1), single_pad * (i+ 1):pad_size] = True
             if i == scalar - 1:
-                attn_mask[single_pad * i:single_pad * (i + 1), single_pad * i] = True
+                attn_mask[single_pad * i:single_pad * (i + 1), :single_pad * i] = True
             else:
                 attn_mask[single_pad * i:single_pad * (i + 1), single_pad * (i + 1):pad_size] = True
                 attn_mask[single_pad * i:single_pad * (i + 1), :single_pad * i] = True
@@ -161,7 +168,7 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
             'batch_idx ': torch.as_tensor(batch_idx).long(),
             'map_known_indice': torch.as_tensor(map_known_indice).long(),
             'known_lbs_bboxes': (known_labels, known_bboxs),
-            'known_idx': know_idx,
+            'know_idx': know_idx,
             'pad_size': pad_size
         }
     else:
@@ -170,8 +177,9 @@ def prepare_for_dn(dn_args, embedweight, batch_size, training,
         attn_mask = None
         mask_dict = None
     
-    input_query_label = input_query_label.transpose(0, 1)
-    input_query_bbox = input_query_bbox.transpose(0, 1)
+    if model_type in ['dab']:
+        input_query_label = input_query_label.transpose(0, 1)
+        input_query_bbox = input_query_bbox.transpose(0, 1)
 
     return input_query_label, input_query_bbox, attn_mask, mask_dict
 

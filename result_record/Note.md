@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=3 python main.py --model_type base \
-               --batch_size 2 --no_aux_loss --eval \
+CUDA_VISIBLE_DEVICES=0 python main.py --model_type base \
+               --batch_size 2 --no_aux_loss --eval --transformer_activation relu --position_embedding sine \
                --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/detr-r50-e632da11.pth \
                --coco_path /ssd1/lipengxiang/datasets/coco
 
@@ -66,12 +66,13 @@ CUDA_VISIBLE_DEVICES=1 python main.py --model_type deformable --use_dab --with_b
                --coco_path /ssd1/lipengxiang/datasets/coco
 
  在decoder中， 只在第一层进行一次query_pos的scale变化
+ dab_detr
 - ✅ dab_transformer 
 - ✅ dab_detr
 - ✅ dab_deformable_transformer
 
 
-CUDA_VISIBLE_DEVICES=5 python main.py --model_type dab --use_dn\
+CUDA_VISIBLE_DEVICES=1 python main.py --model_type dab --use_dn\
                --batch_size 1 --no_aux_loss --eval --position_embedding dab \
                --cls_loss_coef 1 --dropout 0.0 --num_select 100  --num_queries 300\
                --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/DN_DETR_R50.pth \
@@ -83,21 +84,24 @@ CUDA_VISIBLE_DEVICES=2 python main.py --model_type dab --use_dn --dilation\
                --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/DN_DETR_R50_DC5.pth \
                --coco_path /ssd1/lipengxiang/datasets/coco
 
-CUDA_VISIBLE_DEVICES=2 python main.py -m dn_dab_detr \
-                --output_dir logs/dn_DABDETR/R50 \
-                --batch_size 1 --no_aux_loss \
-                --coco_path /ssd1/lipengxiang/datasets/coco \
-                --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/DN_DETR_R50.pth \
-                --use_dn \
-                --eval
-
-export CUDA_HOME=/usr/local/cuda
-
+CUDA_VISIBLE_DEVICES=2 python main.py --model_type dab --use_dn --dilation\
+               --batch_size 1 --no_aux_loss --eval --position_embedding dab \
+               --cls_loss_coef 1 --dropout 0.0 --num_select 100  --num_queries 300\
+               --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/DN_DETR_R50_DC5.pth \
+               --coco_path /ssd1/lipengxiang/datasets/coco
 dn_detr
 - ✅ denoising method
 -  denoising dab detr
 
+model_test & visilize
 
+CUDA_VISIBLE_DEVICES=0 python test_model.py --model_type base \
+               --batch_size 2 --no_aux_loss --eval --transformer_activation relu --position_embedding sine \
+               --resume /ssd1/lipengxiang/hmxiong/Transformer-Series/checkpoints/detr-r50-e632da11.pth
+
+CUDA_VISIBLE_DEVICES=0 python test_model.py --model_type base \
+               --batch_size 2 --no_aux_loss --eval --transformer_activation relu --position_embedding sine \
+               --resume /home/ubuntu/.cache/torch/hub/checkpoints/detr-r50-e632da11.pth
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
 sudo apt install libnccl2=2.8.4-cuda11.1 libnccl-dev=2.6.4-1+cuda10.0

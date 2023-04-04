@@ -9,8 +9,9 @@ This project is mainly used to complete the paper reproduction and precision ali
 - numpy = 1.23.5 pycocotools = 2.0  scipy = 1.7.1
 
 ## What's New
+- [23.4.4] Support **Visualize Tools**and**DN-Deformable-DETR** .
 - [23.4.1] Support **DN-DETR**.
-- Support **DAB-DETR** and **DAN-Deformable-DETR** .
+- Support **DAB-DETR** and **DAB-Deformable-DETR** .
 
 
 
@@ -59,7 +60,18 @@ python setup.py build install
 # unit test (should see all checking is True)
 python test.py
 ```
+## Usage - Visualization
+```bash
+Used to visualize feature maps as well as attention map
+See test.py for details
 
+Sample:
+```
+![DETR](pics/attn.png)
+## Usage - Segmentation
+```bash
+Comming Soon !!
+```
 ## Data preparation
 
 Download and extract COCO 2017 train and val images with annotations from

@@ -144,6 +144,6 @@ def build_backbone(args):
                         return_interm_layers, args.dilation,
                         args.model_type)
     model = Joiner(backbone, position_embedding)
-    # model.num_channels = backbone.num_channels
+    model.num_channels = backbone.num_channels
     # print(len(backbone.strides))
     return model

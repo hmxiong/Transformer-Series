@@ -9,18 +9,26 @@ from pathlib import Path
 from PIL import Image
 import requests
 import matplotlib.pyplot as plt
+from IPython.display import display, clear_output
 
 import numpy as np
 import torch
+import torchvision
 from torch.utils.data import DataLoader, DistributedSampler
 from tools.box_ops import box_cxcywh_to_xyxy, rescale_bboxes
 import torchvision.transforms as T
+import torch.nn.functional as F
 from model import build_model
 from model.position_encoding import PositionEmbeddingSine
 from torch import nn
 from torchvision.models import resnet50
 from torch.nn.functional import dropout,linear,softmax
+from torchvision.ops.boxes import batched_nms
+import ipywidgets as widgets
+
+from tools.visual import filter_boxes, plot_results, AttentionVisualizer
 torch.set_grad_enabled(False)
+# torch.set_grad_enabled(False)
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DETR test model script', add_help=False)
@@ -149,13 +157,9 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     return parser
 
-
 def main(args): 
-    # a = np.ones([2, 256, 228, 228], dtype=float)
-    # d = torch.tensor(a)
-    # position_embedding = PositionEmbeddingSine(256 // 2, normalize=True)
-    # out = position_embedding(d)
-    # print(out.shape)
+    # device = torch.device(args.device)
+
     CLASSES = [
     'N/A', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
     'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A',
@@ -175,177 +179,161 @@ def main(args):
     # colors for visualization
     COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
             [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
-    
-    normalize = T.Compose([
+
+    # standard PyTorch mean-std input image normalization
+    transform_official = T.Compose([
+        # T.Resize(800),
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # standard PyTorch mean-std input image normalization
-    transform = T.Compose([
-            T.Resize([800], max_size=1333),
-            normalize,
-        ])
+    transform_local = T.Compose([
+        T.Resize(800),
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    # # 使用源代码进行模型加载推理
+    # model, criterion, postprocessors = build_model(args)
+    # # 加载线上的模型
+    # checkpoint = torch.load(args.resume, map_location='cuda')
+    # model.load_state_dict(checkpoint['model'])
+    # model.to(device)
+    # model.eval()
 
 
-    # 加载线上的模型
-    model, criterion, postprocessors = build_model(args)
-    # model = torch.hub.load('facebookresearch/detr', 'detr_resnet50', pretrained=True)
+    # 使用hub加载本地模型
+    model = torch.hub.load('C:\\Users\\10631\\.cache\\torch\\hub\\facebookresearch_detr_main', 'detr_resnet50', pretrained=True, source='local')
+    # model = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=True)
     model.eval()
-    # 获取训练好的参数
-    for name, parameters in model.named_parameters():
-        # 获取训练好的object queries，即pq:[100,256]
-        if name == 'query_embed.weight':
-            pq = parameters
-        # 获取解码器的最后一层的交叉注意力模块中q和k的线性权重和偏置:[256*3,256]，[768]
-        if name == 'transformer.decoder.layers.5.multihead_attn.in_proj_weight':
-            in_proj_weight = parameters
-        if name == 'transformer.decoder.layers.5.multihead_attn.in_proj_bias':
-            in_proj_bias = parameters
     # 线上下载图像
-    img_path = '/ssd1/lipengxiang/hmxiong/Transformer-Series/pics/test.jpg'
+    img_path = 'F:/ProjectWorkplace/VOD/Transformer-Series/pics/test.jpg'
     im = Image.open(img_path)
+    
+    img = transform_local(im).unsqueeze(0)
+    # image_tensor=image_tensor.to(device)
 
-    # mean-std normalize the input image (batch-size: 1)
-    img = transform(im).unsqueeze(0)
+    inference_result = model(img)
 
-    # propagate through the model
-    outputs = model(img)
-
-    # keep only predictions with 0.7+ confidence
-    probas = outputs['pred_logits'].softmax(-1)[0, :, :-1]
+    probas = inference_result['pred_logits'].softmax(-1)[0, :, :-1].cpu()
     keep = probas.max(-1).values > 0.9
+    bboxes_scaled = rescale_bboxes(inference_result['pred_boxes'][0,keep].cpu(),im.size)
+    # scores, boxes = filter_boxes(probas,bboxes_scaled,confidence=0.5, apply_nms=True, iou=0.5)
+    # scores = scores.data.numpy()
+    # boxes = boxes.data.numpy()
+    # bboxes_scaled = rescale_bboxes(inference_result['pred_boxes'][0, keep], im.size)
 
-    # convert boxes from [0; 1] to image scales
-    bboxes_scaled = rescale_bboxes(outputs['pred_boxes'][0, keep], im.size)
+    save_path = 'F:/ProjectWorkplace/VOD/Transformer-Series/pics/test_res.jpg'
+    # plot_results(im, scores, boxes, CLASSES, COLORS, save_path )
+    plot_results(im, probas[keep], bboxes_scaled, CLASSES, COLORS, save_path )
 
-    # use lists to store the outputs via up-values
+    # prepare for the hook
     conv_features, enc_attn_weights, dec_attn_weights = [], [], []
-    cq = []     # 存储detr中的 cq
-    pk =  []    # 存储detr中的 encoder pos
-    memory = [] # 存储encoder的输出特征图memory
 
-    # 注册hook
     hooks = [
-        # 获取resnet最后一层特征图
         model.backbone[-2].register_forward_hook(
             lambda self, input, output: conv_features.append(output)
         ),
-        # 获取encoder的图像特征图memory
-        model.transformer.encoder.register_forward_hook(
-            lambda self, input, output: memory.append(output)
-        ),
-        # 获取encoder的最后一层layer的self-attn weights
         model.transformer.encoder.layers[-1].self_attn.register_forward_hook(
             lambda self, input, output: enc_attn_weights.append(output[1])
         ),
-        # 获取decoder的最后一层layer中交叉注意力的 weights
         model.transformer.decoder.layers[-1].multihead_attn.register_forward_hook(
             lambda self, input, output: dec_attn_weights.append(output[1])
-        ),
-        # 获取decoder最后一层self-attn的输出cq
-        model.transformer.decoder.layers[-1].norm1.register_forward_hook(
-            lambda self, input, output: cq.append(output)
-        ),
-        # 获取图像特征图的位置编码pk
-        model.backbone[-1].register_forward_hook(
-            lambda self, input, output: pk.append(output)
         ),
     ]
 
     # propagate through the model
+    # print(model.backbone)
     outputs = model(img)
 
-    # 用完的hook后删除
     for hook in hooks:
         hook.remove()
 
     # don't need the list anymore
-    conv_features = conv_features[0]       # [1,2048,25,34]
-    enc_attn_weights = enc_attn_weights[0] # [1,850,850]   : [N,L,S]
-    dec_attn_weights = dec_attn_weights[0] # [1,100,850]   : [N,L,S] --> [batch, tgt_len, src_len]
-    memory = memory[0] # [850,1,256]
+    # conv_features = torch.tensor([item.cpu().detach().numpy() for item in conv_features[0]]).cuda()
+    # print(conv_features.shape)
+    conv_features = conv_features[0]       # [1, 256, 120, 160] [1, 2048, 25, 34] bs num_ch h w
+    enc_attn_weights = enc_attn_weights[0] # [1, 300, 300]
+    dec_attn_weights = dec_attn_weights[0] # [1, 100, 300]
+    # print(conv_features.shape, enc_attn_weights.shape, dec_attn_weights.shape)
 
-    cq = cq[0]    # decoder的self_attn:最后一层输出[100,1,256]
-    pk = pk[0]    # [1,256,25,34]
-
-    # 绘制postion embedding
-    pk = pk.flatten(-2).permute(2,0,1)           # [1,256,850] --> [850,1,256]
-    pq = pq.unsqueeze(1).repeat(1,1,1)           # [100,1,256]
-    q = pq + cq
-    #------------------------------------------------------#
-    #   1) k = pk，则可视化： (cq + oq)*pk
-    #   2_ k = pk + memory，则可视化 (cq + oq)*(memory + pk)
-    #   读者可自行尝试
-    #------------------------------------------------------#
-    k = pk
-    # k = pk + memory
-    #------------------------------------------------------#
-
-    # 将q和k完成线性层的映射，代码参考自nn.MultiHeadAttn()
-    _b = in_proj_bias
-    _start = 0
-    _end = 256
-    _w = in_proj_weight[_start:_end, :]
-    if _b is not None:
-        _b = _b[_start:_end]
-    q = linear(q, _w, _b)
-
-    _b = in_proj_bias
-    _start = 256
-    _end = 256 * 2
-    _w = in_proj_weight[_start:_end, :]
-    if _b is not None:
-        _b = _b[_start:_end]
-    k = linear(k, _w, _b)
-
-    scaling = float(256) ** -0.5
-    q = q * scaling
-    q = q.contiguous().view(100, 8, 32).transpose(0, 1)
-    k = k.contiguous().view(-1, 8, 32).transpose(0, 1)
-    attn_output_weights = torch.bmm(q, k.transpose(1, 2))
-    print(attn_output_weights.shape)
-    attn_output_weights = attn_output_weights.view(1, 8, 100, 850)
-    attn_output_weights = attn_output_weights.view(1 * 8, 100, 850)
-    attn_output_weights = softmax(attn_output_weights, dim=-1)
-    attn_output_weights = attn_output_weights.view(1, 8, 100, 850)
-
-    # 后续可视化各个头
-    attn_every_heads = attn_output_weights # [1,8,100,850]
-    attn_output_weights = attn_output_weights.sum(dim=1) / 8 # [1,100,850]
-
-    #-----------#
-    #   可视化
-    #-----------#
     # get the feature map shape
     h, w = conv_features['0'].tensors.shape[-2:]
+    # print(conv_features)
+    # print(conv_features['0'].tensors.shape)
+    # [120 ,160]
+    
+    save_path2 = 'F:/ProjectWorkplace/VOD/Transformer-Series/pics/hot_res.jpg'
 
-    fig, axs = plt.subplots(ncols=len(bboxes_scaled), nrows=10, figsize=(22, 28))  # [11,2]
+    fig, axs = plt.subplots(ncols=len(bboxes_scaled), nrows=2, figsize=(22, 7))
     colors = COLORS * 100
-
-    # 可视化
     for idx, ax_i, (xmin, ymin, xmax, ymax) in zip(keep.nonzero(), axs.T, bboxes_scaled):
-        # 可视化decoder的注意力权重
         ax = ax_i[0]
+        # print(dec_attn_weights[0, idx].shape)
         ax.imshow(dec_attn_weights[0, idx].view(h, w))
         ax.axis('off')
-        ax.set_title(f'query id: {idx.item()}',fontsize = 30)
-        # 可视化框和类别
+        ax.set_title(f'query id: {idx.item()}')
         ax = ax_i[1]
         ax.imshow(im)
         ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                                   fill=False, color='blue', linewidth=3))
+                                fill=False, color='blue', linewidth=3))
         ax.axis('off')
-        ax.set_title(CLASSES[probas[idx].argmax()],fontsize = 30)
-        # 分别可视化8个头部的位置特征图
-        for head in range(2, 2 + 8):
-            ax = ax_i[head]
-            ax.imshow(attn_every_heads[0, head-2, idx].view(h,w))
-            ax.axis('off')
-            ax.set_title(f'head:{head-2}',fontsize = 30)
-    fig.tight_layout()        # 自动调整子图来使其填充整个画布
-    plt.savefig('/ssd1/lipengxiang/hmxiong/Transformer-Series/pics/savefig_example.jpg')
-    # plt.show()
+        ax.set_title(CLASSES[probas[idx].argmax()])
+    fig.tight_layout()
+    fig.show()
+    # fig.savefig(save_path2)
+    # output of the CNN
+    f_map = conv_features['0']
+    print("Encoder attention:      ", enc_attn_weights[0].shape)
+    print("Feature map:            ", f_map.tensors.shape)
+    # get the HxW shape of the feature maps of the CNN
+    shape = f_map.tensors.shape[-2:]
+    # and reshape the self-attention to a more interpretable shape
+    sattn = enc_attn_weights[0].reshape(shape + shape)
+    print("Reshaped self-attention:", sattn.shape)
+    
+    # downsampling factor for the CNN, is 32 for DETR and 16 for DETR DC5
+    fact = 32
+
+    # let's select 4 reference points for visualization
+    idxs = [(200, 200), (280, 400), (200, 600), (440, 800),]
+
+    # here we create the canvas
+    fig = plt.figure(constrained_layout=True, figsize=(25 * 0.7, 8.5 * 0.7))
+    # and we add one plot per reference point
+    gs = fig.add_gridspec(2, 4)
+    axs = [
+        fig.add_subplot(gs[0, 0]),
+        fig.add_subplot(gs[1, 0]),
+        fig.add_subplot(gs[0, -1]),
+        fig.add_subplot(gs[1, -1]),
+    ]
+
+    # for each one of the reference points, let's plot the self-attention
+    # for that point
+    for idx_o, ax in zip(idxs, axs):
+        idx = (idx_o[0] // fact, idx_o[1] // fact)
+        ax.imshow(sattn[..., idx[0], idx[1]], cmap='cividis', interpolation='nearest')
+        ax.axis('off')
+        ax.set_title(f'self-attention{idx_o}')
+
+    # and now let's add the central image, with the reference points as red circles
+    fcenter_ax = fig.add_subplot(gs[:, 1:-1])
+    fcenter_ax.imshow(im)
+    for (y, x) in idxs:
+        scale = im.height / img.shape[-2]
+        x = ((x // fact) + 0.5) * fact
+        y = ((y // fact) + 0.5) * fact
+        fcenter_ax.add_patch(plt.Circle((x * scale, y * scale), fact // 2, color='r'))
+        fcenter_ax.axis('off')
+    plt.show()
+    
+    w = AttentionVisualizer(model, transform_official)
+    w.run()
+
+    
+
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR test model script', parents=[get_args_parser()])

@@ -57,4 +57,10 @@ def masks_to_boxes(masks):
     y, x = torch.meshgrid(y,x)
 
     x_mask = (masks * y.unsqueeze(0))
+
+def rescale_bboxes(out_bbox, size):
+    img_w, img_h = size
+    b = box_cxcywh_to_xyxy(out_bbox)
+    b = b * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32)
+    return b
     

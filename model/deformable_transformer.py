@@ -18,7 +18,8 @@ class DeformableTransformer(nn.Module):
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 use_dab=False, high_dim_query_update=False, no_sine_embed=False):
+                 use_dab=False, high_dim_query_update=False, no_sine_embed=False,
+                 use_dn=False):
         super().__init__()
 
         self.ffn_hidden_dim = ffn_hidden_dim
@@ -26,6 +27,7 @@ class DeformableTransformer(nn.Module):
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
         self.use_dab = use_dab
+        self.use_dn = use_dn
 
         encoder_layer = DeformableTransformerEncoderLayer(ffn_hidden_dim, dim_feedforward,
                                                           dropout, activation, 
@@ -133,7 +135,7 @@ class DeformableTransformer(nn.Module):
         return valid_ratio
 
     # 输入的是多尺度的特征图，以及对应的mask和pos_embedding
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, attn_mask=None):
         """
         经过backbone输出4个不同尺度的特征图srcs，以及这4个特征图对应的masks和位置编码
         srcs:  list4  0=[bs 256 H/8 W/8]      1=[bs 256 H/16 W/16] 2=[bs 256 H/32 W/32] 3=[bs 256 H/64 W/64]
@@ -196,7 +198,8 @@ class DeformableTransformer(nn.Module):
         elif self.use_dab:
             reference_points = query_embed[..., self.ffn_hidden_dim:].sigmoid() 
             tgt = query_embed[..., :self.ffn_hidden_dim]
-            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+            if self.use_dn == False:
+                tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
             init_reference_out = reference_points
         else:
             query_embed , tgt = torch.split(query_embed, c, dim=1)
@@ -222,7 +225,7 @@ class DeformableTransformer(nn.Module):
                                             spatial_shapes, level_start_index, 
                                             valid_ratios, 
                                             query_pos=query_embed if not self.use_dab else None,
-                                            src_padding_mask=mask_flatten)
+                                            src_padding_mask=mask_flatten, attn_mask = attn_mask)
         inter_references_out = inter_references
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
@@ -344,14 +347,14 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tgt
     
     def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes,
-                level_start_index, src_padding_mask=None):
+                level_start_index, src_padding_mask=None, self_attn_mask=None):
         # sefl attn 
         q = k = self.with_pos_embed(tgt, query_pos)
         # transpose进行矩阵转置，同时只选取其中的有用部分
         # self-attention
         # 第一个attention的目的：学习各个物体之间的关系/位置   可以知道图像当中哪些位置会存在物体  物体信息->tgt
         # 所以qk都是query embedding + query pos   v就是query embedding
-        tgt2 = self.self_attn(q.transpose(0,1), k.transpose(0,1), tgt.transpose(0,1))[0].transpose(0, 1)
+        tgt2 = self.self_attn(q.transpose(0,1), k.transpose(0,1), tgt.transpose(0,1), attn_mask=self_attn_mask)[0].transpose(0, 1)
         tgt = tgt+ self.dropout2(tgt2)
         tgt = self.norm2(tgt)
         # cross attention  使用（多尺度）可变形注意力模块替代原生的Transformer交叉注意力
@@ -393,7 +396,7 @@ class DeformableTransformerDecoder(nn.Module):
             self.high_dim_query_proj = MLP(ffn_hidden_dim, ffn_hidden_dim, ffn_hidden_dim, 2)
     
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index,
-                src_valid_ratios, query_pos=None, src_padding_mask=None):
+                src_valid_ratios, query_pos=None, src_padding_mask=None, attn_mask=None):
         """
         tgt: 预设的query embedding [bs  300  256]
         query_pos: 预设的query pos [bs  300  256]
@@ -405,8 +408,9 @@ class DeformableTransformerDecoder(nn.Module):
         """
         if self.use_dab:
             assert query_pos is None
-            bs = src.shape[0]
-            reference_points = reference_points[None].repeat(bs, 1, 1) # bs, nq, 4(xywh)
+            if attn_mask is not None:
+                bs = src.shape[0]
+                reference_points = reference_points[None].repeat(bs, 1, 1) # bs, nq, 4(xywh)
         
         output = tgt
 
@@ -434,7 +438,8 @@ class DeformableTransformerDecoder(nn.Module):
             # output: [bs 300 256] = self-attention输出特征 + cross-attention输出特征
             # 知道图像中物体与物体之间的关系 + encoder增强后的图像特征 + 图像与物体之间的关系
             output = layer(output, query_pos, reference_points_input, src, 
-                           src_spatial_shapes, src_level_start_index, src_padding_mask)
+                           src_spatial_shapes, src_level_start_index, 
+                           src_padding_mask, self_attn_mask=attn_mask)
             
             if self.bbox_embed is not None:
                 tmp = self.bbox_embed[lid](output)
@@ -485,5 +490,6 @@ def build_deforamble_transformer(args):
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage,
         two_stage_num_proposals=args.num_queries,
-        use_dab=args.use_dab)
+        use_dab=args.use_dab,
+        use_dn=args.use_dn)
 

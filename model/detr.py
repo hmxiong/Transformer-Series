@@ -1,3 +1,6 @@
+import os
+import copy
+
 import torch
 import math
 import torch.nn.functional as F
@@ -189,6 +192,7 @@ class DABDETR(nn.Module):
         if self.use_dn:
             self.label_enc = nn.Embedding(num_classes + 1, hidden_dim - 1)
             self.num_classes = num_classes
+            # self.model_type = 'dab'
 
         # setting query dim
         self.query_dim = query_dim
@@ -247,8 +251,11 @@ class DABDETR(nn.Module):
 
         # prepare fo dn training
         input_query_label, input_query_bbox, attn_mask, mask_dict = \
-           prepare_for_dn(dn_args, embedweight, src.size(0), self.training, self.num_queries,
-                          self.num_classes, self.hidden_dim, self.label_enc)
+           prepare_for_dn(dn_args, tgt_weight=None, embedweight=embedweight, 
+                                batch_size = src.size(0), training= self.training, 
+                                num_queries=self.num_queries, num_classes=self.num_classes, 
+                                hidden_dim=self.hidden_dim, label_enc=self.label_enc, 
+                                model_type='dab')
         # print(input_query_label.shape)
         hs, reference = self.transformer(self.input_proj(src), mask, input_query_bbox, pos[-1], tgt=input_query_label,
                                          attn_mask=attn_mask)
@@ -317,6 +324,7 @@ class SetCriterion(nn.Module):
             self.model_type = model_type
             self.use_dn = use_dn
         else:
+            print("SetCriterion type: base")
             self.num_classes = num_classes
             self.matcher = matcher
             self.weight_dict = weight_dict
@@ -457,7 +465,7 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
+        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
@@ -493,18 +501,39 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-        
-        # DeNoising Losss Computation
-        if self.use_dn:
-            aux_num = 0
-            if 'aux_outputs' in outputs:
-                aux_num = len(outputs['aux_outputs'])
-            dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
-            losses.update(dn_losses)
-        
-        if return_indices:
-            indices_list.append(indices0_copy)
-            return losses, indices_list
+                    
+        if self.model_type != 'base':
+            if 'enc_outputs' in outputs:
+                enc_outputs = outputs['enc_outputs']
+                bin_targets = copy.deepcopy(targets)
+                for bt in bin_targets:
+                    bt['labels'] = torch.zeros_like(bt['labels'])
+                # if os.environ.get('IPDB_SHILONG_DEBUG') == 'INFO':
+                #     import ipdb; ipdb.set_trace()
+                indices = self.matcher(enc_outputs, bin_targets)
+                for loss in self.losses:
+                    if loss == 'masks':
+                        # Intermediate masks losses are too costly to compute, we ignore them.
+                        continue
+                    kwargs = {}
+                    if loss == 'labels':
+                        # Logging is enabled only for the last layer
+                        kwargs['log'] = False
+                    l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                    l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                    losses.update(l_dict)
+                
+            # DeNoising Losss Computation
+            if self.use_dn:
+                aux_num = 0
+                if 'aux_outputs' in outputs:
+                    aux_num = len(outputs['aux_outputs'])
+                dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
+                losses.update(dn_losses)
+            
+            if return_indices:
+                indices_list.append(indices0_copy)
+                return losses, indices_list
 
         return losses
 

@@ -37,9 +37,10 @@ IoU metric: bbox
 ## DN-DAB-DETR-R50-DC5
 Command:
 ```bash
-python main.py --model_type dab --use_dn --dilation\
-               --batch_size 1 --no_aux_loss --eval --position_embedding dab \
-               --cls_loss_coef 1 --dropout 0.0 --num_select 300  --num_queries 300\
+python main.py --model_type deformable --use_dab --with_box_refine  --use_dn\
+               --batch_size 1 --no_aux_loss --eval  \
+               --cls_loss_coef 1 --dropout 0.0 --num_select 100 --num_queries 300\
+               --transformer_activation relu --num_patterns 0 \
                --resume path/to/checkpoints \
                --coco_path path/to/coco
 ```
@@ -59,5 +60,29 @@ IoU metric: bbox
  Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.684
  Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.833
 ```
-
+## DN-DAB-Deformable-DETR-R50
+Command:
+```bash
+python main.py --model_type dab --use_dn --dilation\
+               --batch_size 1 --no_aux_loss --eval --position_embedding dab \
+               --cls_loss_coef 1 --dropout 0.0 --num_select 300  --num_queries 300\
+               --resume path/to/checkpoints \
+               --coco_path path/to/coco
+```
+COCO detection val5k evaluation results:
+```bash
+IoU metric: bbox
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.494
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.675
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.539
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.313
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.526
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.655
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.375
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.629
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.673
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.477
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.718
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.857
+```
 ### notice

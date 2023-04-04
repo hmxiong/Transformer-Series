@@ -1,0 +1,8 @@
+setup.py
+F:/ProjectWorkplace/VOD/Transformer-Series/model/basic_operator/src/vision.cpp
+F:/ProjectWorkplace/VOD/Transformer-Series/model/basic_operator/src/cpu/ms_deform_attn_cpu.cpp
+F:/ProjectWorkplace/VOD/Transformer-Series/model/basic_operator/src/cuda/ms_deform_attn_cuda.cu
+MultiScaleDeformableAttention.egg-info/PKG-INFO
+MultiScaleDeformableAttention.egg-info/SOURCES.txt
+MultiScaleDeformableAttention.egg-info/dependency_links.txt
+MultiScaleDeformableAttention.egg-info/top_level.txt

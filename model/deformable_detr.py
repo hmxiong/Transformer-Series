@@ -16,6 +16,7 @@ from .matcher import build_matcher
 from .detr import (dice_loss, sigmoid_focal_loss, MLP, PostProcess, SetCriterion)
 # from .detr import (dice_loss, sigmoid_focal_loss, MLP)
 from .deformable_transformer import build_deforamble_transformer
+from .dn_components import prepare_for_dn, dn_post_process
 from .transformer import get_clone
 import copy
 
@@ -23,11 +24,14 @@ class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False,
-                 use_dab=True, num_patterns=0, random_refpoints_xy=False,):
+                 use_dab=True, 
+                 num_patterns=0, 
+                 random_refpoints_xy=False,
+                 use_dn=False):
         super().__init__()
         self.num_queries = num_queries
         self.transformer = transformer
-        hidden_dim = transformer.ffn_hidden_dim
+        self.hidden_dim = hidden_dim = transformer.ffn_hidden_dim
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
@@ -35,12 +39,21 @@ class DeformableDETR(nn.Module):
         self.use_dab = use_dab
         self.num_patterns = num_patterns
         self.random_refpoints_xy = random_refpoints_xy
+        # wether to us DeNoising
+        self.use_dn = use_dn
+        if self.use_dn:
+            self.label_enc = nn.Embedding(num_classes + 1, hidden_dim - 1)  # # for indicator
+            self.num_classes = num_classes
+
 
         if not two_stage:
             if not use_dab:
                 self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
             else:
-                self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
+                if self.use_dn:
+                    self.tgt_embed = nn.Embedding(num_queries, hidden_dim-1) # # for indicator
+                else:
+                    self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
                 self.refpoint_embed = nn.Embedding(num_queries, 4)
                 if random_refpoints_xy:
                     # import ipdb; ipdb.set_trace()
@@ -109,7 +122,7 @@ class DeformableDETR(nn.Module):
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, dn_args=None):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         # pos: 3个不同尺度的特征对应的3个位置编码(这里一步到位直接生成经过1x1conv降维后的位置编码)
@@ -151,11 +164,21 @@ class DeformableDETR(nn.Module):
         #     query_embeds = self.query_embed.weight
         if self.two_stage:
             query_embeds = None
+            attn_mask = None
         elif self.use_dab:
             if self.num_patterns == 0:
-                tgt_embed = self.tgt_embed.weight           # nq, 256
                 refanchor = self.refpoint_embed.weight      # nq, 4
-                query_embeds = torch.cat((tgt_embed, refanchor), dim=1)
+                if self.use_dn == False:
+                    tgt_embed = self.tgt_embed.weight           # nq, 256
+                    query_embeds = torch.cat((tgt_embed, refanchor), dim=1)
+                    attn_mask = None
+                elif self.use_dn:
+                    tgt_all_embed = tgt_embed = self.tgt_embed.weight
+                    # prepare for dn
+                    input_query_label, input_query_bbox, attn_mask, mask_dict = \
+                        prepare_for_dn(dn_args, tgt_all_embed, refanchor, src.size(0), self.training, self.num_queries, self.num_classes,
+                                    self.hidden_dim, self.label_enc, model_type='deformable')
+                    query_embeds = torch.cat((input_query_label, input_query_bbox), dim=2)           # nq, 256
             else:
                 # multi patterns
                 tgt_embed = self.tgt_embed.weight           # nq, 256
@@ -165,9 +188,12 @@ class DeformableDETR(nn.Module):
                 tgt_all_embed = tgt_embed + pat_embed
                 refanchor = self.refpoint_embed.weight.repeat(self.num_patterns, 1)      # nq*num_pat, 4
                 query_embeds = torch.cat((tgt_all_embed, refanchor), dim=1)
+                attn_mask = None
         else:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+            attn_mask = None
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = \
+            self.transformer(srcs, masks, pos, query_embeds, attn_mask)
 
         outputs_classes = []
         outputs_coords = []
@@ -193,6 +219,10 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
+        if self.use_dn:
+            # dn post process
+            outputs_class, outputs_coord = dn_post_process(outputs_class, outputs_coord, mask_dict)
+
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -204,7 +234,10 @@ class DeformableDETR(nn.Module):
         # 'pred_logits': 最后一层的分类头输出 [bs, 300, num_classes]
         # 'pred_boxes': 最后一层的回归头输出 [bs, 300, xywh(归一化)]
         # 'aux_outputs': 其他中间5层的分类头和输出头
-        return out
+        if self.use_dn:
+            return out, mask_dict
+        else:
+            return out
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -237,13 +270,19 @@ def build_deformable_detr(args):
         two_stage=args.two_stage,
         use_dab=True,
         num_patterns=args.num_patterns,
-        random_refpoints_xy=args.random_refpoints_xy
+        random_refpoints_xy=args.random_refpoints_xy,
+        use_dn = args.use_dn
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
+    # dn loss
+    if args.use_dn:
+        weight_dict['tgt_loss_ce'] = args.cls_loss_coef
+        weight_dict['tgt_loss_bbox'] = args.bbox_loss_coef
+        weight_dict['tgt_loss_giou'] = args.giou_loss_coef
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
         weight_dict["loss_dice"] = args.dice_loss_coef
