@@ -9,7 +9,7 @@ This project is mainly used to complete the paper reproduction and precision ali
 - numpy = 1.23.5 pycocotools = 2.0  scipy = 1.7.1
 
 ## What's New
-- [23.4.4] Support **Visualize Tools**and**DN-Deformable-DETR** .
+- [23.4.4] Support **Visualize Tools** and **DN-Deformable-DETR** .
 - [23.4.1] Support **DN-DETR**.
 - Support **DAB-DETR** and **DAB-Deformable-DETR** .
 
