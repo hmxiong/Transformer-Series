@@ -9,6 +9,7 @@ This project is mainly used to complete the paper reproduction and precision ali
 - numpy = 1.23.5 pycocotools = 2.0  scipy = 1.7.1
 
 ## What's New
+- [23.4.9] Support **DINO-Scale4** .
 - [23.4.4] Support **Visualize Tools** and **DN-Deformable-DETR** .
 - [23.4.1] Support **DN-DETR**.
 - Support **DAB-DETR** and **DAB-Deformable-DETR** .
@@ -17,7 +18,7 @@ This project is mainly used to complete the paper reproduction and precision ali
 
 ## Model List
 <details open>
-<summary> Supported methods </summary>
+<summary> Detection methods </summary>
 
 - ✅ [DETR](./result_record/DETR_Precision_alignment_record.md)
 - ✅ [Deformable-DETR](./result_record/Deformable-DETR_Precision_alignment.md)
@@ -25,9 +26,16 @@ This project is mainly used to complete the paper reproduction and precision ali
 - ✅ [DAB-DETR](./result_record/DAB_DETR_Precision_alignment.md)
 - ✅ [DAB-Deformable-DETR](./result_record/DAB_DETR_Precision_alignment.md)
 - ✅ [DN-DETR](./result_record/DN_DETR_Precision_alignment.md)
--  [DINO](comming soom)
+- ✅ [DINO](./result_record/DINO_Precision_alignment.md)
 </details>
 
+<details open>
+<summary> Segmentation methods </summary>
+
+-  [MaskDINO](comming soon)
+-  [MaskFormer]
+-  [Mask2Former]
+</details>
 
 ## Usage - Object detection
 First, clone the repository locally:

@@ -15,7 +15,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .detr import (dice_loss, sigmoid_focal_loss, MLP, PostProcess, SetCriterion)
 # from .detr import (dice_loss, sigmoid_focal_loss, MLP)
-from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer import build_deformable_transformer
 from .dn_components import prepare_for_dn, dn_post_process
 from .transformer import get_clone
 import copy
@@ -257,7 +257,7 @@ def build_deformable_detr(args):
     backbone = build_backbone(args)
     # print(backbone.num_channels)
     model_type = args.model_type
-    transformer = build_deforamble_transformer(args)
+    transformer = build_deformable_transformer(args)
     print("model type: deformable")
     model = DeformableDETR(
         backbone,

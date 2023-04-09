@@ -44,7 +44,8 @@ class BackboneBase(nn.Module):  # using model_type to change the structure
                  train_backbone: bool,
                  num_channels: int,
                  return_interm_layers: bool,
-                 model_type:str):
+                 model_type:str,
+                 return_interm_indices: list):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             # layer0 layer1不需要训练 因为前面层提取的信息其实很有限 都是差不多的 不需要训练
@@ -76,8 +77,12 @@ class BackboneBase(nn.Module):  # using model_type to change the structure
                 return_layers = {'layer4': "0"}
                 self.strides = [32]
                 self.num_channels = [2048]
+        elif model_type in ['dino']:
+            return_layers = {}
+            for idx, layer_index in enumerate(return_interm_indices):
+                return_layers.update({"layer{}".format(5 - len(return_interm_indices) + idx): "{}".format(layer_index)})
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
-        # self.num_channels = num_channels
+        self.num_channels = num_channels
         
     def forward(self, tensorlist:NestedTensor):
         """
@@ -104,7 +109,8 @@ class Backbone(BackboneBase):
                  train_backbone: bool, 
                  return_interm_layers: bool,
                  dilation:bool,
-                 model_type:str):
+                 model_type:str,
+                 return_interm_indices:list,):
         backbone = getattr(torchvision.models,name)(
             replace_stride_with_dilation = [False, False, dilation],
             pretrained = is_main_process(), norm_layer=FrozenBatchNorm2d
@@ -114,14 +120,19 @@ class Backbone(BackboneBase):
         num_channels = 512 if name in ('resnet18','resnet34') else 2048
         if model_type == 'deformable' and dilation: # deformable detr在使用空洞卷积的时候会对最后一层进行一次操作
             self.strides[-1] = self.strides[-1] // 2
+        elif model_type in ['dino']:
+            assert return_interm_indices in [[0,1,2,3], [1,2,3], [3]]
+            num_channels_all = [256, 512, 1024, 2048]
+            num_channels = num_channels_all[4-len(return_interm_indices):]
         super().__init__(backbone, train_backbone, 
-                         num_channels, return_interm_layers,model_type)
+                         num_channels, return_interm_layers,model_type,return_interm_indices)
 
 class Joiner(nn.Sequential):
     # 将ResNet提取的特征与相应的position embedding相结合用于送进后续的Transformer结构进行计算
-    def __init__(self, backbone, position_embedding):
+    def __init__(self, backbone, position_embedding, model_type):
         super().__init__(backbone, position_embedding)
-        self.strides = backbone.strides
+        if model_type in ['deformable']:
+            self.strides = backbone.strides
         self.num_channels = backbone.num_channels
     
     def forward(self,tensor_list:NestedTensor):
@@ -138,12 +149,19 @@ def build_backbone(args):
     position_embedding = build_position_encoding(args)
     # 是否需要进行训练
     train_backbone = args.lr_backbone > 0
+    model_type =  args.model_type
+    if args.model_type in ['dino']:
+        return_interm_indices = args.return_interm_indices
+    else:
+        return_interm_indices = None
     # 是否需要返回中间层结果 目标检测False  分割True
     return_interm_layers = args.masks or (args.num_feature_levels > 1)
     backbone = Backbone(args.backbone, train_backbone, 
                         return_interm_layers, args.dilation,
-                        args.model_type)
-    model = Joiner(backbone, position_embedding)
+                        args.model_type,
+                        return_interm_indices)
+    bb_num_channels = backbone.num_channels
+    model = Joiner(backbone, position_embedding, model_type)
     model.num_channels = backbone.num_channels
     # print(len(backbone.strides))
     return model

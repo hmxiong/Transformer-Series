@@ -97,6 +97,64 @@ def get_args_parser():
     parser.add_argument('--use_lft', action="store_true",
                         help="use look forward twice from DINO.")
 
+    # Variants for DINO
+    parser.add_argument('--ddetr_lr_param', action="store_true")
+    parser.add_argument('--onecyclelr', action="store_true")
+    parser.add_argument('--multi_step_lr', default=False, action="store_true")
+    parser.add_argument('--use_checkpoint', default=False, action="store_true")
+    parser.add_argument('--pdetr3_bbox_embed_diff_each_layer', default=False, action="store_true")
+    parser.add_argument('--dabdetr_yolo_like_anchor_update', default=False, action="store_true")
+    parser.add_argument('--dabdetr_deformable_encoder', default=False, action="store_true")
+    parser.add_argument('--dabdetr_deformable_decoder', default=False, action="store_true")
+    parser.add_argument('--use_deformable_box_attn', default=False, action="store_true")
+    parser.add_argument('--decoder_layer_noise', default=False, action="store_true")
+    parser.add_argument('--add_channel_attention', default=False, action="store_true")
+    parser.add_argument('--add_pos_value', default=False, action="store_true")
+    parser.add_argument('--two_stage_bbox_embed_share', default=False, action="store_true")
+    parser.add_argument('--two_stage_class_embed_share', default=False, action="store_true")
+    parser.add_argument('--two_stage_learn_wh', default=False, action="store_true")
+    parser.add_argument('--two_stage_keep_all_tokens', default=False, action="store_true")
+    parser.add_argument('--no_interm_box_loss', default=False, action="store_true")
+    parser.add_argument('--dec_pred_bbox_embed_share', default=False, action="store_true") # True
+    parser.add_argument('--dec_pred_class_embed_share', default=False, action="store_true") # True
+    parser.add_argument('--embed_init_tgt', default=False, action="store_true")  # True
+    parser.add_argument('--match_unstable_error', default=False, action="store_true") # True
+    parser.add_argument('--use_detached_boxes_dec_out', default=False, action="store_true")
+    
+    parser.add_argument('--lr_drop_list', default=[33, 45], type=list)
+    parser.add_argument('--return_interm_indices', default=[1, 2, 3], type=list)
+    parser.add_argument('--unic_layers', default=0, type=float)
+    parser.add_argument('--pdetr3_refHW', default=-1, type=int)
+    parser.add_argument('--fix_refpoints_hw', default=-1, type=int)
+    parser.add_argument('--dln_xy_noise', default=0.2, type=float)
+    parser.add_argument('--dln_hw_noise', default=0.2, type=float)
+    parser.add_argument('--two_stage_pat_embed', default=0, type=int)
+    parser.add_argument('--two_stage_add_query_num', default=0, type=int)
+    parser.add_argument('--two_stage_default_hw', default=0.05, type=float)
+    parser.add_argument('--enc_loss_coef', default=1.0, type=float)
+    parser.add_argument('--interm_loss_coef', default=1.0, type=float)
+    parser.add_argument('--nms_iou_threshold', default=-1, type=int)
+    parser.add_argument('--dn_number', default=100, type=int)
+    parser.add_argument('--dn_box_noise_scale', default=0.4, type=float)
+    parser.add_argument('--dn_label_noise_ratio', default=0.5, type=float)
+    parser.add_argument('--dn_labelbook_size', default=91, type=int)
+    parser.add_argument('--ema_decay', default=0.9997, type=float)
+    parser.add_argument('--ema_epoch', default=0, type=int)
+    parser.add_argument('--num_classes', default=91, type=int)
+    parser.add_argument('--query_dim', default=4, type=int)
+    parser.add_argument('--dec_layer_number', default=None, type=int)
+    
+    parser.add_argument('--param_dict_type', default='default', type=str)
+    parser.add_argument('--lr_backbone_names', default=['backbone.0'], type=list)
+    parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=list)
+    parser.add_argument('--box_attn_type', default='roi_align', type=str)
+    parser.add_argument('--two_stage_type', default='standard', type=str)
+    parser.add_argument('--decoder_sa_type', default='sa', type=str)
+    parser.add_argument('--matcher_type', default='HungarianMatcher', type=str)
+    parser.add_argument('--decoder_module_seq', default=['sa', 'ca', 'ffn'], type=list)
+    
+    
+    
 
     # * Segmentation
     parser.add_argument('--masks', action='store_true',

@@ -314,7 +314,7 @@ class SetCriterion(nn.Module):
             losses: list of all the losses to be applied. See get_loss for list of available losses.
         """
         super().__init__()
-        if model_type in ['deformable', 'conditional','dab']:
+        if model_type in ['deformable', 'conditional','dab','dino']:
             print("SetCriterion type:", model_type)
             self.num_classes = num_classes
             self.matcher = matcher
@@ -351,7 +351,7 @@ class SetCriterion(nn.Module):
         
         if self.model_type == 'base':
             loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        elif self.model_type in ['deformable', 'conditional','dab']:
+        elif self.model_type in ['deformable', 'conditional','dab','dino']:
             # print("loss_labels type: %s", self.model_type)
             target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2]+1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
@@ -400,7 +400,7 @@ class SetCriterion(nn.Module):
                                    box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
 
-        if self.model_type in ['dab']:
+        if self.model_type in ['dab', 'dino']:
             with torch.no_grad():
                 losses['loss_xy'] = loss_bbox[..., :2].sum() / num_boxes
                 losses['loss_hw'] = loss_bbox[..., 2:].sum() / num_boxes
@@ -570,7 +570,7 @@ class PostProcess(nn.Module):
 
             # convert to [x0, y0, x1, y1] format
             boxes = box_cxcywh_to_xyxy(out_bbox)
-        elif self.model_type in ['deformable', 'conditional', 'dab']:
+        elif self.model_type in ['deformable', 'conditional', 'dab','dino']:
             prob = out_logits.sigmoid()
             topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), num_select, dim=1)
             scores = topk_values

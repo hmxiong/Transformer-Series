@@ -23,6 +23,7 @@ class DeformableTransformer(nn.Module):
         super().__init__()
 
         self.ffn_hidden_dim = ffn_hidden_dim
+        self.num_queries = 300
         self.n_head = n_head
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
@@ -274,10 +275,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
         return src
 
 class DeformableTransformerEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers):
+    def __init__(self, encoder_layer, num_layers, model_type):
         super().__init__()
         self.layers = get_clone(encoder_layer, num_layers)
         self.num_layers = num_layers
+        self.model_type = model_type
 
     @staticmethod
     # 获取参考点的位置函数
@@ -310,9 +312,16 @@ class DeformableTransformerEncoder(nn.Module):
                 valid_ratios, pos=None, padding_mask=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        
+        # 实际上这一部分是不需要的
+        intermediate_output = []
+        intermediate_ref = []
+       
+            
         for _, layer in enumerate(self.layers):
             output = layer(output, pos, reference_points,
                            spatial_shapes, level_start_index, padding_mask)
+            
         return output
 
 class DeformableTransformerDecoderLayer(nn.Module):
@@ -475,7 +484,7 @@ def get_activation_fn(activation):
         return F.glu
     raise RuntimeError(F"activation should be relu/gelu , not{activation}.")
 
-def build_deforamble_transformer(args):
+def build_deformable_transformer(args):
     return DeformableTransformer(
         ffn_hidden_dim=args.hidden_dim,
         n_head=args.nheads,

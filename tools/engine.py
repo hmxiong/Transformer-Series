@@ -93,7 +93,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         # outputs = model(samples)
-        if need_tgt_for_training:
+        if need_tgt_for_training and args.model_type != 'dino':
             outputs, _ = model(samples, dn_args=args.num_patterns)
         else:
             outputs = model(samples)
